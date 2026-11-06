@@ -9,6 +9,10 @@ use std::sync::Mutex;
 
 pub struct Db(pub Mutex<Connection>);
 
+/// 翻译缓存保留 30 天、最多 2000 条，避免长期无限增长或一直命中过期译文。
+pub const CACHE_TTL_SECS: i64 = 30 * 24 * 60 * 60;
+pub const CACHE_MAX_ENTRIES: i64 = 2000;
+
 #[derive(Debug, Clone, Serialize)]
 pub struct HistoryItem {
     pub id: i64,
@@ -79,19 +83,31 @@ impl Db {
             );",
         )
         .map_err(|e| format!("无法初始化本地数据库：{}", e))?;
+        // 旧库迁移：translation_cache 增加 expires_at（旧数据默认 0，一律视为过期）。
+        let has_expires: bool = conn
+            .prepare("SELECT expires_at FROM translation_cache LIMIT 0")
+            .is_ok();
+        if !has_expires {
+            conn.execute_batch("ALTER TABLE translation_cache ADD COLUMN expires_at INTEGER NOT NULL DEFAULT 0;")
+                .map_err(|e| format!("无法升级本地数据库：{}", e))?;
+        }
         Ok(Self(Mutex::new(conn)))
     }
 
     pub fn cache_get(&self, key: &str) -> Option<(String, String)> {
         let conn = self.0.lock().ok()?;
         let mut stmt = conn
-            .prepare("SELECT translated_text, provider FROM translation_cache WHERE cache_key = ?1")
+            .prepare(
+                "SELECT translated_text, provider FROM translation_cache \
+                 WHERE cache_key = ?1 AND expires_at > ?2",
+            )
             .ok()?;
         let row = stmt
-            .query_row(params![key], |r| {
+            .query_row(params![key, now_secs()], |r| {
                 Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
             })
             .ok()?;
+        drop(stmt);
         let _ = conn.execute(
             "UPDATE translation_cache SET hit_count = hit_count + 1 WHERE cache_key = ?1",
             params![key],
@@ -109,12 +125,29 @@ impl Db {
         translated_text: &str,
     ) {
         if let Ok(conn) = self.0.lock() {
+            let now = now_secs();
             let _ = conn.execute(
                 "INSERT OR REPLACE INTO translation_cache
-                 (cache_key, source_text, source_lang, target_lang, provider, translated_text, created_at, hit_count)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 0)",
-                params![key, source_text, source_lang, target_lang, provider, translated_text, now_secs()],
+                 (cache_key, source_text, source_lang, target_lang, provider, translated_text, created_at, hit_count, expires_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 0, ?8)",
+                params![key, source_text, source_lang, target_lang, provider, translated_text, now, now + CACHE_TTL_SECS],
             );
+            // 清理过期项，并把总量压到上限以内（保留最新写入的）
+            let _ = conn.execute(
+                "DELETE FROM translation_cache WHERE expires_at <= ?1",
+                params![now],
+            );
+            let _ = conn.execute(
+                "DELETE FROM translation_cache WHERE cache_key NOT IN \
+                 (SELECT cache_key FROM translation_cache ORDER BY created_at DESC LIMIT ?1)",
+                params![CACHE_MAX_ENTRIES],
+            );
+        }
+    }
+
+    pub fn cache_clear(&self) {
+        if let Ok(conn) = self.0.lock() {
+            let _ = conn.execute("DELETE FROM translation_cache", []);
         }
     }
 
@@ -254,6 +287,22 @@ mod tests {
         let (text, provider) = db.cache_get(&key).unwrap();
         assert_eq!(text, "Hello");
         assert_eq!(provider, "google");
+    }
+
+    #[test]
+    fn cache_expires_and_clears() {
+        let db = test_db();
+        let key = cache_key("你好", "zh", "en");
+        db.cache_put(&key, "你好", "zh", "en", "google", "Hello");
+        assert!(db.cache_get(&key).is_some());
+        // 人工把过期时间拨到过去：应视为未命中
+        db.0.lock().unwrap()
+            .execute("UPDATE translation_cache SET expires_at = 1 WHERE cache_key = ?1", params![key])
+            .unwrap();
+        assert!(db.cache_get(&key).is_none());
+        db.cache_put(&key, "你好", "zh", "en", "google", "Hello");
+        db.cache_clear();
+        assert!(db.cache_get(&key).is_none());
     }
 
     #[test]

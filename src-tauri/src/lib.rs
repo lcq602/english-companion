@@ -5,6 +5,7 @@
 mod db;
 mod lang;
 mod monitor;
+mod secrets;
 mod terms;
 mod translate;
 
@@ -29,6 +30,20 @@ pub struct AppState {
     semaphore: Arc<Semaphore>,
     /// 主窗口是否处于点击穿透状态（点击落到窗口后面的应用）。
     click_through: Arc<AtomicBool>,
+}
+
+/// 缓存作用域：把翻译配置（引擎/备用引擎/区域/服务地址/账号标识与密钥的哈希）
+/// 一并纳入缓存 key。切换引擎或账号后不会再命中旧引擎的缓存；作用域本身是
+/// SHA-256 哈希，不保存任何明文配置。
+fn cache_scope(config: &ProviderConfig) -> String {
+    let mut normalized = config.clone();
+    normalized.timeout_secs = 0; // 超时不影响译文，不纳入作用域
+    let serialized = serde_json::to_string(&normalized).unwrap_or_default();
+    db::cache_key(&serialized, "config", "v1")
+}
+
+fn scoped_cache_key(text: &str, source: &str, target: &str, config: &ProviderConfig) -> String {
+    db::cache_key(&format!("{}|{}", cache_scope(config), text), source, target)
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -80,8 +95,8 @@ async fn translate_text(
         });
     }
 
-    // 1) 先查本地 SQLite 缓存（去重：相同文本不重复请求网络）
-    let key = db::cache_key(&text, &source, &target);
+    // 1) 先查本地 SQLite 缓存（作用域含当前引擎配置，切换引擎不会串缓存）
+    let key = scoped_cache_key(&text, &source, &target, &request.config);
     if let Some((cached, provider)) = state.db.cache_get(&key) {
         state.db.history_add(&text, &cached, &source, &target, &provider);
         return Ok(TranslateResponse {
@@ -139,10 +154,7 @@ async fn lookup_word(
     if word.is_empty() || !word.chars().all(|c| c.is_ascii_alphabetic() || c == '-' || c == '\'') {
         return Err("请选择一个英文单词".to_string());
     }
-    let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(8))
-        .build()
-        .map_err(|_| "无法创建网络客户端".to_string())?;
+    let client = translate::http_client(8)?;
 
     let mut phonetic = String::new();
     let mut audio_url = String::new();
@@ -193,8 +205,8 @@ async fn lookup_word(
         }
     }
 
-    // 中文释义走机器翻译（优先缓存）
-    let key = db::cache_key(&word, "en", "zh");
+    // 中文释义走机器翻译（优先缓存，作用域同翻译缓存）
+    let key = scoped_cache_key(&word, "en", "zh", &config);
     let meaning_zh = if let Some((cached, _)) = state.db.cache_get(&key) {
         cached
     } else {
@@ -257,6 +269,23 @@ fn get_stats(state: tauri::State<'_, AppState>) -> Stats {
     Stats { cache_count, history_count }
 }
 
+#[tauri::command]
+fn clear_cache(state: tauri::State<'_, AppState>) {
+    state.db.cache_clear();
+}
+
+/// 用 Windows DPAPI 加密一包密钥 JSON（前端只保存返回的密文）。
+#[tauri::command]
+fn protect_secrets(plaintext: String) -> Result<String, String> {
+    secrets::protect(&plaintext)
+}
+
+/// 解密 protect_secrets 保存的密文。
+#[tauri::command]
+fn unprotect_secrets(ciphertext: String) -> Result<String, String> {
+    secrets::unprotect(&ciphertext)
+}
+
 // ---------- 监听配置 / 窗口 / 剪贴板命令 ----------
 
 #[derive(Debug, Clone, Deserialize)]
@@ -310,6 +339,33 @@ fn move_main_window_preset(app: tauri::AppHandle, preset: String) {
     }
 }
 
+/// 按内容高度调整主显示窗高度（长译文自动长高，短内容自动收回），
+/// 并保证窗口不超出当前屏幕范围。宽度与用户摆放的位置保持不变。
+#[tauri::command]
+fn resize_main_window_height(app: tauri::AppHandle, height: u32) {
+    if let Some(window) = app.get_webview_window("main") {
+        let Ok(size) = window.outer_size() else { return };
+        let Ok(position) = window.outer_position() else { return };
+        let screen_height = window
+            .current_monitor()
+            .ok()
+            .flatten()
+            .map(|m| m.size().height)
+            .unwrap_or(1080);
+        let max_height = screen_height.saturating_sub(32).max(160);
+        let target = height.clamp(120, max_height);
+        if size.height == target {
+            return;
+        }
+        let _ = window.set_size(tauri::PhysicalSize::new(size.width, target));
+        // 变高后若底部超出屏幕，把窗口上移收回屏幕内
+        if position.y > 0 && (position.y as u32).saturating_add(target) > screen_height {
+            let y = (screen_height - target) as i32 - 16;
+            let _ = window.set_position(tauri::PhysicalPosition::new(position.x, y.max(0)));
+        }
+    }
+}
+
 /// 显示独立配置窗口：已有则显示聚焦，被关闭销毁后按相同参数重建。
 fn show_settings(app: &tauri::AppHandle) {
     if let Some(window) = app.get_webview_window("settings") {
@@ -355,8 +411,11 @@ fn copy_text(state: tauri::State<'_, AppState>, text: String) -> Result<(), Stri
 }
 
 /// 快捷键触发：读剪贴板并把文本发给主显示窗走翻译。
+/// 监听已暂停时不发出（与托盘/主窗口的暂停语义保持一致）。
 fn emit_clipboard_text(app: &tauri::AppHandle, state: &MonitorState) {
-    let _ = state;
+    if state.paused.load(Ordering::Relaxed) {
+        return;
+    }
     if let Ok(mut cb) = arboard::Clipboard::new() {
         if let Ok(text) = cb.get_text() {
             let trimmed = text.trim().to_string();
@@ -497,12 +556,16 @@ pub fn run() {
             remove_favorite,
             list_favorites,
             get_stats,
+            clear_cache,
+            protect_secrets,
+            unprotect_secrets,
             copy_text,
             open_settings,
             set_click_through,
             set_monitor_config,
             move_main_window,
-            move_main_window_preset
+            move_main_window_preset,
+            resize_main_window_height
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

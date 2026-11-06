@@ -88,19 +88,110 @@ export const DEFAULT_SETTINGS: AppSettings = {
   debounceMs: 800,
 };
 
-const STORAGE_KEY = "english-companion.settings.v1";
+// ---- 存储（v1.6 起）：普通设置与密钥分开存 ----
+// 普通设置存 settings.v2（已剔除密钥字段）；密钥打包后经 Rust 端 Windows DPAPI
+// 加密，只保存密文（secrets.v1）。旧版 settings.v1（明文）在首次启动时自动迁移。
+const STORAGE_KEY = "english-companion.settings.v2";
+const LEGACY_STORAGE_KEY = "english-companion.settings.v1";
+const SECRETS_KEY = "english-companion.secrets.v1";
+
+export const SECRET_FIELDS = [
+  "tencentSecretId", "tencentSecretKey", "microsoftKey", "libreKey",
+  "baiduAppId", "baiduKey", "volcanoAccessKey", "volcanoSecretKey", "appsScriptToken",
+] as const;
+type SecretField = (typeof SECRET_FIELDS)[number];
+
+let secretCache: Partial<Record<SecretField, string>> | null = null;
+let hydrated = false;
+
+function extractSecrets(settings: AppSettings): Partial<Record<SecretField, string>> {
+  const out: Partial<Record<SecretField, string>> = {};
+  for (const field of SECRET_FIELDS) {
+    const value = settings[field];
+    if (value) out[field] = value;
+  }
+  return out;
+}
+
+function sanitize(settings: AppSettings): AppSettings {
+  const copy = { ...settings };
+  for (const field of SECRET_FIELDS) copy[field] = "";
+  return copy;
+}
 
 export function loadSettings(): AppSettings {
   try {
-    const saved = JSON.parse(localStorage.getItem(STORAGE_KEY) ?? "null") as Partial<AppSettings> | null;
-    return { ...DEFAULT_SETTINGS, ...(saved ?? {}) };
+    const raw = localStorage.getItem(STORAGE_KEY) ?? localStorage.getItem(LEGACY_STORAGE_KEY);
+    const saved = JSON.parse(raw ?? "null") as Partial<AppSettings> | null;
+    const merged = { ...DEFAULT_SETTINGS, ...(saved ?? {}) };
+    if (secretCache) {
+      for (const field of SECRET_FIELDS) merged[field] = secretCache[field] ?? "";
+    }
+    return merged;
   } catch {
     return { ...DEFAULT_SETTINGS };
   }
 }
 
+/// 同步保存：只写普通设置；密钥字段只做"非空合并"进内存缓存并异步加密落盘，
+/// 因此主窗口的暂停/穿透等小开关保存不会误删已存密钥。
 export function saveSettings(settings: AppSettings): void {
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(settings));
+  localStorage.setItem(STORAGE_KEY, JSON.stringify(sanitize(settings)));
+  const incoming = extractSecrets(settings);
+  if (Object.keys(incoming).length) {
+    secretCache = { ...(secretCache ?? {}), ...incoming };
+    void persistSecrets(secretCache);
+  }
+}
+
+async function persistSecrets(secrets: Partial<Record<SecretField, string>>): Promise<void> {
+  if (!("__TAURI_INTERNALS__" in window)) return;
+  if (!Object.keys(secrets).length) {
+    localStorage.removeItem(SECRETS_KEY);
+    return;
+  }
+  const { invoke } = await import("@tauri-apps/api/core");
+  const ciphertext = await invoke<string>("protect_secrets", { plaintext: JSON.stringify(secrets) });
+  localStorage.setItem(SECRETS_KEY, ciphertext);
+}
+
+/// 配置窗口保存专用：密钥以草稿为准全量替换（清空输入框即删除对应密钥），
+/// 等待 DPAPI 加密真正完成才返回，失败会抛错给界面提示。
+export async function saveSettingsSecure(settings: AppSettings): Promise<void> {
+  secretCache = extractSecrets(settings);
+  localStorage.setItem(STORAGE_KEY, JSON.stringify(sanitize(settings)));
+  await persistSecrets(secretCache);
+}
+
+/// 启动时调用一次：解密已存密钥到内存，并把旧版明文设置迁移到新存储。
+export async function hydrateSettings(): Promise<AppSettings> {
+  if (hydrated) return loadSettings();
+  const base = loadSettings();
+  const legacySecrets = extractSecrets(base);
+  let storedSecrets: Partial<Record<SecretField, string>> = {};
+  const blob = localStorage.getItem(SECRETS_KEY);
+  if (blob && "__TAURI_INTERNALS__" in window) {
+    try {
+      const { invoke } = await import("@tauri-apps/api/core");
+      const plaintext = await invoke<string>("unprotect_secrets", { ciphertext: blob });
+      storedSecrets = JSON.parse(plaintext) as Partial<Record<SecretField, string>>;
+    } catch {
+      storedSecrets = {}; // 密文不可解（如换了电脑/用户）：不覆盖原密文，密钥按未配置处理
+    }
+  }
+  secretCache = { ...storedSecrets, ...legacySecrets };
+  if (Object.keys(legacySecrets).length) {
+    // 旧版明文迁移：写入加密存储 + 普通设置改存脱敏版 + 删除旧明文
+    try {
+      await persistSecrets(secretCache);
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(sanitize(base)));
+      localStorage.removeItem(LEGACY_STORAGE_KEY);
+    } catch {
+      // 加密不可用时保留旧数据，不丢用户密钥
+    }
+  }
+  hydrated = true;
+  return loadSettings();
 }
 
 /// 传给 Rust 端的统一服务配置（与 src-tauri/src/translate.rs 的 ProviderConfig 对应）。

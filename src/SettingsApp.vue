@@ -3,10 +3,10 @@
 // 与主显示窗同源共享 localStorage；保存时通过事件通知主窗口即时生效。
 import { computed, onMounted, ref } from "vue";
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import { emit } from "@tauri-apps/api/event";
-import { loadSettings, saveSettings, PROVIDER_NOTES, TEXT_COLORS, textColorOf, type AppSettings, type ProviderId } from "./lib/settings";
+import { emit, listen } from "@tauri-apps/api/event";
+import { hydrateSettings, loadSettings, saveSettingsSecure, PROVIDER_NOTES, TEXT_COLORS, textColorOf, type AppSettings, type ProviderId } from "./lib/settings";
 import {
-  clearHistory, deleteHistory, isTauri, listFavorites, listHistory, moveMainWindow,
+  clearCache, clearHistory, deleteHistory, getStats, isTauri, listFavorites, listHistory, moveMainWindow,
   moveMainWindowPreset, removeFavorite, speak, syncMonitorConfig,
   type FavoriteWord, type HistoryItem,
 } from "./lib/api";
@@ -35,10 +35,20 @@ const showVolcano = computed(() => draft.value.provider === "volcano" || draft.v
 const showAppsScript = computed(() => draft.value.provider === "appsscript" || draft.value.fallbackProvider === "appsscript");
 
 async function save() {
-  saveSettings(draft.value);
-  await syncMonitorConfig(draft.value).catch(() => undefined);
-  if (isTauri()) await emit("settings-changed", { ...draft.value }).catch(() => undefined);
-  savedHint.value = "已保存，主窗口即时生效";
+  try {
+    await saveSettingsSecure(draft.value);
+  } catch (e) {
+    savedHint.value = `密钥加密保存失败：${e instanceof Error ? e.message : String(e)}`;
+    return;
+  }
+  try {
+    await syncMonitorConfig(draft.value);
+    if (isTauri()) await emit("settings-changed", { ...draft.value });
+    savedHint.value = "已保存，主窗口即时生效";
+  } catch {
+    savedHint.value = "设置已保存在本机，但同步到主窗口失败，请重启软件后再试";
+    return;
+  }
   window.setTimeout(() => (savedHint.value = ""), 2000);
 }
 
@@ -89,7 +99,10 @@ const reviewAnswer = computed(() => {
   if (!item) return "";
   return item.target_lang === "en" ? item.source_text : item.translated_text;
 });
-async function refreshHistory() { historyItems.value = await listHistory().catch(() => []); }
+const cacheCount = ref(0);
+async function refreshStats() { cacheCount.value = (await getStats().catch(() => ({ cache_count: 0 }))).cache_count; }
+async function onClearCache() { await clearCache().catch(() => undefined); await refreshStats(); }
+async function refreshHistory() { historyItems.value = await listHistory().catch(() => []); await refreshStats(); }
 async function onRemoveHistory(id: number) { await deleteHistory(id).catch(() => undefined); await refreshHistory(); }
 async function onClearHistory() { await clearHistory().catch(() => undefined); historyItems.value = []; }
 function formatTime(ts: number) {
@@ -103,10 +116,15 @@ async function onRemoveFavorite(word: string) { await removeFavorite(word).catch
 
 onMounted(async () => {
   document.body.classList.add("settings-body");
+  draft.value = await hydrateSettings().catch(() => draft.value);
   loadSavedPos();
   await refreshHistory();
   await refreshFavorites();
   if (isTauri()) {
+    // 托盘/主窗口切换暂停时，配置草稿跟着变，避免保存旧草稿把新状态覆盖回去
+    await listen<boolean>("monitor-paused-changed", (event) => {
+      draft.value = { ...draft.value, paused: event.payload };
+    }).catch(() => undefined);
     // 关闭按钮改为隐藏，避免窗口被销毁后还要重建
     await getCurrentWindow().onCloseRequested(async (event) => {
       event.preventDefault();
@@ -279,7 +297,9 @@ onMounted(async () => {
         <div class="settings-row-actions">
           <button class="secondary-button" type="button" :disabled="!historyItems.length" @click="reviewing = true; reviewIndex = 0; revealed = false">开始复习</button>
           <button class="secondary-button danger" type="button" :disabled="!historyItems.length" @click="onClearHistory">清空历史</button>
+          <button class="secondary-button" type="button" :disabled="!cacheCount" @click="onClearCache">清空翻译缓存（{{ cacheCount }} 条）</button>
         </div>
+        <p class="note">翻译缓存按引擎分别保存，保留 30 天、最多 2000 条；切换引擎后不会再串用旧缓存。</p>
         <p v-if="!historyItems.length" class="empty-note dark">还没有翻译记录。</p>
         <article v-for="item in historyItems" :key="item.id" class="history-item dark">
           <div class="history-main static">

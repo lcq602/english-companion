@@ -13,9 +13,54 @@
 
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use std::collections::HashMap;
+use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
 
 use crate::terms;
+
+/// 按超时秒数复用 reqwest 客户端（连接池），避免每次翻译都新建客户端。
+pub fn http_client(timeout_secs: u64) -> Result<reqwest::Client, String> {
+    static CLIENTS: OnceLock<Mutex<HashMap<u64, reqwest::Client>>> = OnceLock::new();
+    let clients = CLIENTS.get_or_init(|| Mutex::new(HashMap::new()));
+    let timeout_secs = timeout_secs.clamp(3, 30);
+    if let Ok(guard) = clients.lock() {
+        if let Some(client) = guard.get(&timeout_secs) {
+            return Ok(client.clone());
+        }
+    }
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(timeout_secs))
+        .build()
+        .map_err(|_| "无法创建网络客户端".to_string())?;
+    if let Ok(mut guard) = clients.lock() {
+        guard.insert(timeout_secs, client.clone());
+    }
+    Ok(client)
+}
+
+/// 错误重试分类：集中维护，避免各处靠零散字符串判断。
+/// 配置缺失/格式错误/额度耗尽重试也没用，直接失败或走备用引擎；
+/// 超时/连接失败/限流/5xx 才值得重试一次。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RetryClass {
+    Retryable,
+    Fatal,
+}
+
+pub fn retry_class(message: &str) -> RetryClass {
+    const FATAL_MARKERS: &[&str] = &[
+        "尚未配置", "格式不对", "额度", "用完", "NoFreeAmount", "未知的翻译服务", "无法创建",
+    ];
+    if FATAL_MARKERS.iter().any(|m| message.contains(m)) {
+        return RetryClass::Fatal;
+    }
+    const RETRYABLE_MARKERS: &[&str] = &["超时", "无法连接", "429", "HTTP 5", "请求失败"];
+    if RETRYABLE_MARKERS.iter().any(|m| message.contains(m)) {
+        return RetryClass::Retryable;
+    }
+    RetryClass::Fatal
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProviderConfig {
@@ -976,10 +1021,7 @@ async fn translate_with_retry(
         match provider.translate(client, text, source, target, config).await {
             Ok(v) => return Ok(v),
             Err(e) => {
-                let retryable = e.contains("超时")
-                    || e.contains("无法连接")
-                    || e.contains("429")
-                    || e.contains("HTTP 5");
+                let retryable = retry_class(&e) == RetryClass::Retryable;
                 last_err = e;
                 if attempt == 0 && retryable {
                     tokio::time::sleep(Duration::from_millis(600)).await;
@@ -1034,23 +1076,26 @@ pub async fn translate_full(
     target: &str,
     config: &ProviderConfig,
 ) -> Result<(String, String), String> {
-    let timeout = Duration::from_secs(config.timeout_secs.clamp(3, 30));
-    let client = reqwest::Client::builder()
-        .timeout(timeout)
-        .build()
-        .map_err(|_| "无法创建网络客户端".to_string())?;
-    let (protected, used_terms) = terms::protect(text);
-    let chunks = terms::chunk_text(&protected, 1200);
-    let mut outputs = Vec::new();
-    let mut used_provider = config.provider.clone();
-    for chunk in &chunks {
-        let (translated, provider_used) =
-            translate_chunk(&client, chunk, source, target, config).await?;
-        used_provider = provider_used;
-        outputs.push(translated);
-    }
-    let joined = if target == "zh" { outputs.join("") } else { outputs.join(" ") };
-    Ok((terms::restore(&joined, &used_terms), used_provider))
+    let client = http_client(config.timeout_secs)?;
+    // 整次翻译设总截止时间：主引擎重试 + 备用引擎 + 多分块串行也不会无限等下去。
+    let total_secs = (config.timeout_secs.clamp(3, 30) * 3).clamp(15, 60);
+    let work = async {
+        let (protected, used_terms) = terms::protect(text);
+        let chunks = terms::chunk_text(&protected, 1200);
+        let mut outputs = Vec::new();
+        let mut used_provider = config.provider.clone();
+        for chunk in &chunks {
+            let (translated, provider_used) =
+                translate_chunk(&client, chunk, source, target, config).await?;
+            used_provider = provider_used;
+            outputs.push(translated);
+        }
+        let joined = if target == "zh" { outputs.join("") } else { outputs.join(" ") };
+        Ok::<(String, String), String>((terms::restore(&joined, &used_terms), used_provider))
+    };
+    tokio::time::timeout(Duration::from_secs(total_secs), work)
+        .await
+        .map_err(|_| format!("翻译等待超过 {} 秒已停止：网络或翻译服务响应太慢，请稍后重试或切换引擎", total_secs))?
 }
 
 #[cfg(test)]
@@ -1077,6 +1122,16 @@ mod tests {
         assert!(parse_libre(&json!({"error": "key required"})).unwrap_err().contains("key required"));
         let ms = json!([{"translations": [{"text": "你好", "to": "zh"}]}]);
         assert_eq!(parse_microsoft(&ms).unwrap(), "你好");
+    }
+
+    #[test]
+    fn retry_classification() {
+        assert_eq!(retry_class("Google 请求超时，请检查网络后重试"), RetryClass::Retryable);
+        assert_eq!(retry_class("Google 免费接口限流（HTTP 429）"), RetryClass::Retryable);
+        assert_eq!(retry_class("百度翻译请求失败（HTTP 503）"), RetryClass::Retryable);
+        assert_eq!(retry_class("尚未配置腾讯云密钥"), RetryClass::Fatal);
+        assert_eq!(retry_class("MyMemory 免费额度已用完（HTTP 429）"), RetryClass::Fatal);
+        assert_eq!(retry_class("Apps Script 地址格式不对"), RetryClass::Fatal);
     }
 
     #[test]

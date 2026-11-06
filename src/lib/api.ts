@@ -68,6 +68,15 @@ export async function listFavorites(): Promise<FavoriteWord[]> {
   return invoke<FavoriteWord[]>("list_favorites");
 }
 
+export async function getStats(): Promise<{ cache_count: number; history_count: number }> {
+  if (!isTauri()) return { cache_count: 0, history_count: 0 };
+  return invoke("get_stats");
+}
+
+export async function clearCache(): Promise<void> {
+  if (isTauri()) await invoke("clear_cache");
+}
+
 export async function addFavorite(word: string, meaning: string, phonetic: string): Promise<void> {
   if (isTauri()) await invoke("add_favorite", { word, meaning, phonetic });
 }
@@ -103,6 +112,10 @@ export async function moveMainWindow(x: number, y: number): Promise<void> {
 
 export async function moveMainWindowPreset(preset: string): Promise<void> {
   if (isTauri()) await invoke("move_main_window_preset", { preset });
+}
+
+export async function resizeMainWindowHeight(height: number): Promise<void> {
+  if (isTauri()) await invoke("resize_main_window_height", { height: Math.round(height) });
 }
 
 export async function openSettingsWindow(): Promise<void> {

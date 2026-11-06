@@ -2,16 +2,17 @@
 // 主窗口：纯显示块。没有输入框——文本来自 UIA 读取当前焦点输入框 / 剪贴板监听
 // （Rust monitor 线程发 companion-text 事件），这里只负责防抖翻译并展示译文。
 // 全透明小块；控件只在悬停时浮现；位置可在配置窗口里设定，也可直接拖动。
-import { computed, onMounted, onUnmounted, ref } from "vue";
+import { computed, nextTick, onMounted, onUnmounted, ref, watch } from "vue";
 import { getCurrentWindow, PhysicalPosition } from "@tauri-apps/api/window";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import WordDetailCard from "./components/WordDetailCard.vue";
-import { loadSettings, saveSettings, textColorOf, type AppSettings } from "./lib/settings";
+import { hydrateSettings, loadSettings, saveSettings, textColorOf, type AppSettings } from "./lib/settings";
 import {
-  addFavorite, isTauri, lookupWord, openSettingsWindow, setClickThrough,
+  addFavorite, isTauri, lookupWord, openSettingsWindow, resizeMainWindowHeight, setClickThrough,
   syncMonitorConfig, translateText, type WordDetail,
 } from "./lib/api";
 import { isMostlyEnglish, splitWords } from "./lib/words";
+import { RequestGate } from "./lib/requestGate";
 import "./styles.css";
 
 const POS_KEY = "english-companion.window-pos";
@@ -25,11 +26,13 @@ const fromCache = ref(false);
 const clickThrough = ref(false);
 const paused = ref(settings.value.paused);
 
+const displaySection = ref<HTMLElement | null>(null);
 const wordDetail = ref<WordDetail | null>(null);
 const wordLoading = ref(false);
 const wordError = ref("");
 
-let requestId = 0;
+const translationGate = new RequestGate();
+const wordGate = new RequestGate();
 let lastTranslatedText = "";
 let pendingText = "";
 let debounceTimer: number | undefined;
@@ -39,19 +42,19 @@ const resultTokens = computed(() => (result.value && isMostlyEnglish(result.valu
 const displayColor = computed(() => textColorOf(settings.value));
 
 async function runTranslate(text: string) {
-  const id = ++requestId;
+  const id = translationGate.next();
   status.value = "loading";
   error.value = "";
   try {
     const response = await translateText(text, settings.value);
-    if (id !== requestId) return;
+    if (!translationGate.isCurrent(id)) return;
     result.value = response.translated_text;
     providerName.value = response.provider_name;
     fromCache.value = response.from_cache;
     lastTranslatedText = text;
     status.value = "success";
   } catch (e) {
-    if (id !== requestId) return;
+    if (!translationGate.isCurrent(id)) return;
     error.value = e instanceof Error ? e.message : String(e);
     status.value = "error";
   }
@@ -73,11 +76,18 @@ function onIncomingText(text: string) {
   }, delay);
 }
 
-// Esc：一键清除——关单词卡、清掉译文和报错，显示块回到完全空白
-function clearDisplay() {
+function closeWordCard() {
+  wordGate.invalidate(); // 已在途的查词返回后也不许把卡片重新弹出来
   wordDetail.value = null;
   wordError.value = "";
   wordLoading.value = false;
+}
+
+// Esc：一键清除——关单词卡、清掉译文和报错，显示块回到完全空白。
+// 同时让所有在途请求失效，避免网络晚返回把刚清掉的内容写回来。
+function clearDisplay() {
+  translationGate.invalidate();
+  closeWordCard();
   result.value = "";
   error.value = "";
   status.value = "idle";
@@ -91,15 +101,19 @@ function onGlobalKeydown(event: KeyboardEvent) {
 }
 
 async function onWordClick(word: string) {
+  const id = wordGate.next();
   wordLoading.value = true;
   wordError.value = "";
   wordDetail.value = null;
   try {
-    wordDetail.value = await lookupWord(word, settings.value);
+    const detail = await lookupWord(word, settings.value);
+    if (!wordGate.isCurrent(id)) return;
+    wordDetail.value = detail;
   } catch (e) {
+    if (!wordGate.isCurrent(id)) return;
     wordError.value = e instanceof Error ? e.message : String(e);
   } finally {
-    wordLoading.value = false;
+    if (wordGate.isCurrent(id)) wordLoading.value = false;
   }
 }
 
@@ -124,6 +138,21 @@ function toggleLock() {
   saveSettings(settings.value);
 }
 
+// 窗口高度随内容走：长译文/单词卡自动长高，清空后收回小块，避免内容被裁掉。
+let fitTimer: number | undefined;
+async function fitWindowToContent() {
+  if (!isTauri()) return;
+  await nextTick();
+  const el = displaySection.value;
+  if (!el) return;
+  const desired = Math.ceil(el.scrollHeight + 16);
+  window.clearTimeout(fitTimer);
+  fitTimer = window.setTimeout(() => {
+    void resizeMainWindowHeight(desired).catch(() => undefined);
+  }, 60);
+}
+watch([result, error, wordDetail, wordLoading, wordError], () => void fitWindowToContent());
+
 const win = () => (isTauri() ? getCurrentWindow() : null);
 function hideWindow() { void win()?.hide().catch(() => undefined); }
 function closeWindow() { void win()?.close().catch(() => undefined); }
@@ -141,6 +170,9 @@ async function applyWindowSettings() {
 
 onMounted(async () => {
   globalThis.addEventListener("keydown", onGlobalKeydown);
+  // 先解密本机密钥并迁移旧版明文设置，监听事件在之后才注册，不会抢跑
+  settings.value = await hydrateSettings().catch(() => settings.value);
+  paused.value = settings.value.paused;
   await syncMonitorConfig(settings.value).catch(() => undefined);
   await applyWindowSettings();
   if (!isTauri()) return;
@@ -172,9 +204,15 @@ onMounted(async () => {
     settings.value = { ...settings.value, paused: event.payload };
     saveSettings(settings.value);
   }));
+  void fitWindowToContent();
   unlisteners.push(await listen<AppSettings>("settings-changed", (event) => {
     settings.value = { ...loadSettings(), ...event.payload };
     paused.value = settings.value.paused;
+    // 配置已变：让旧配置发起的在途请求失效，结果回来也不覆盖新状态
+    translationGate.invalidate();
+    closeWordCard();
+    if (status.value === "loading") status.value = result.value ? "success" : "idle";
+    void syncMonitorConfig(settings.value).catch(() => undefined);
     void applyWindowSettings();
   }));
 });
@@ -182,6 +220,7 @@ onMounted(async () => {
 onUnmounted(() => {
   window.removeEventListener("keydown", onGlobalKeydown);
   window.clearTimeout(debounceTimer);
+  window.clearTimeout(fitTimer);
   unlisteners.forEach((fn) => fn());
 });
 </script>
@@ -196,6 +235,7 @@ onUnmounted(() => {
     }"
   >
     <section
+      ref="displaySection"
       class="translation-card display-card"
       :class="{ 'is-through': clickThrough, 'has-outline': settings.textOutline }"
       @mousedown="startDragging"
@@ -211,7 +251,7 @@ onUnmounted(() => {
         </span>
       </div>
 
-      <div class="display-body" aria-live="polite" @click.self="wordDetail = null; wordError = ''">
+      <div class="display-body" aria-live="polite" @click.self="closeWordCard">
         <!-- 默认空白：没有译文时什么都不显示；只有报错才出字，方便定位问题 -->
         <p v-if="error" class="error-message">{{ error }}</p>
         <p v-else-if="resultTokens" class="result-text big">
@@ -228,7 +268,7 @@ onUnmounted(() => {
         :detail="wordDetail ?? { word: '', phonetic: '', audio_url: '', meaning_zh: '', definitions: [] }"
         :loading="wordLoading"
         :error="wordError"
-        @close="wordDetail = null; wordError = ''"
+        @close="closeWordCard"
         @favorite="onFavoriteWord"
       />
     </section>

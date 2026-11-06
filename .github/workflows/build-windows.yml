@@ -35,6 +35,15 @@ jobs:
       - name: Install frontend deps
         run: npm ci
 
+      - name: Verify version consistency
+        shell: pwsh
+        run: |
+          $pkg = (Get-Content package.json -Raw | ConvertFrom-Json).version
+          $conf = (Get-Content src-tauri/tauri.conf.json -Raw | ConvertFrom-Json).version
+          $cargo = (Select-String -Path src-tauri/Cargo.toml -Pattern '^version = "(.+)"').Matches[0].Groups[1].Value
+          if ($pkg -ne $conf -or $pkg -ne $cargo) { Write-Error "Version mismatch: package=$pkg tauri=$conf cargo=$cargo"; exit 1 }
+          Write-Host "Version OK: $pkg"
+
       - name: Frontend tests
         run: npm test
 
@@ -61,11 +70,14 @@ jobs:
           name: english-companion-windows
           path: release-files/*
 
-      - name: Publish release v1.5.2
+      - name: Publish release
         if: github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v')
         shell: pwsh
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+GH_TOKEN: <redacted>
         run: |
-          gh release view v1.5.2 2>$null; if ($LASTEXITCODE -ne 0) { gh release create v1.5.2 --title "English Companion v1.5.2" --notes "Windows desktop real-time translation companion. Free machine translation only (no LLM). Portable exe + NSIS installer, Windows 10 22H2 / Windows 11." }
-          gh release upload v1.5.2 release-files/EnglishCompanion-portable.exe release-files/EnglishCompanion-setup.exe --clobber
+          $version = (Get-Content package.json -Raw | ConvertFrom-Json).version
+          $tag = "v$version"
+          gh release view $tag 2>$null; if ($LASTEXITCODE -ne 0) { gh release create $tag --title "English Companion $tag" --notes "Windows desktop real-time translation companion. Free machine translation only (no LLM). Portable exe + NSIS installer, Windows 10 22H2 / Windows 11." }
+          gh release upload $tag release-files/EnglishCompanion-portable.exe release-files/EnglishCompanion-setup.exe --clobber
+          Get-FileHash release-files/EnglishCompanion-portable.exe, release-files/EnglishCompanion-setup.exe -Algorithm SHA256 | Format-Table -AutoSize

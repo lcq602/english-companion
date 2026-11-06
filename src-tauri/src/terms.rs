@@ -28,6 +28,16 @@ pub fn protect(text: &str) -> (String, Vec<String>) {
             // 英文名词：大小写不敏感查找（输入里多为原样英文）
             let lower_result = result.to_lowercase();
             let lower_term = term.to_lowercase();
+            if lower_result.len() != result.len() {
+                // 极少数 Unicode 字符（如 İ）小写化会改变字节长度，
+                // 此时用小写串的下标切原文会错位甚至 panic，退回精确匹配替换。
+                if result.contains(term) {
+                    let idx = used.len();
+                    result = result.replace(term, &placeholder(idx));
+                    used.push(term.to_string());
+                }
+                continue;
+            }
             if lower_result.contains(&lower_term) {
                 let idx = used.len();
                 // 简单逐个替换（不区分大小写，用小写定位后按原长度切分）
@@ -103,6 +113,14 @@ mod tests {
         let restored = restore("I use ZXTERM0ZX and ZXTERM1ZX", &used);
         // 还原顺序与 used 顺序一致
         assert!(restored.contains("Spring Boot") || restored.contains("Vue"));
+    }
+
+    #[test]
+    fn protect_survives_case_expanding_unicode() {
+        // İ 小写化会改变字节长度：不能 panic，精确命中的名词仍应被保护
+        let (protected, used) = protect("İ Spring Boot");
+        assert!(used.contains(&"Spring Boot".to_string()));
+        assert!(!protected.contains("Spring Boot"));
     }
 
     #[test]
