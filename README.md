@@ -19,6 +19,7 @@ Windows 桌面实时英语翻译伴侣：在任何软件里打字（或复制文
 - Microsoft Translator：官方 API，需用户自己的 Azure Key（F0 免费层每月 200 万字符）。
 - MyMemory：免费备用。匿名约 1000 词/天；填邮箱可提升到约 10000 词/天。
 - LibreTranslate：开源可自建，配置自建地址即可免 Key；公共站需付费 Key。
+- Google Apps Script 自建翻译：填自己部署的 Apps Script 地址（/exec 结尾）+ Token，按 {code, translatedText} 协议调用；走 Google 服务器，本地无法直连时可单独给该引擎配本地代理。
 - 中译英 / 英译中自动识别；技术名词（Spring Boot、Vue、Rust 等）用占位保护不被误译；同一文本先查 SQLite 缓存，不重复请求。
 
 ## 功能（v1.1 极简显示窗）

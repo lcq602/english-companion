@@ -46,6 +46,14 @@ pub struct ProviderConfig {
     pub volcano_secret_key: String,
     #[serde(default = "default_volcano_region")]
     pub volcano_region: String,
+    // Google Apps Script 自建翻译（v1.3 新增）：用户自己的 Apps Script 部署地址（/exec）
+    #[serde(default)]
+    pub apps_script_url: String,
+    #[serde(default)]
+    pub apps_script_token: String,
+    /// 可选本地代理（如 http://127.0.0.1:4602），仅该引擎使用；本地无法直连 Google 时填。
+    #[serde(default)]
+    pub apps_script_proxy: String,
 }
 
 fn default_volcano_region() -> String {
@@ -75,6 +83,9 @@ impl Default for ProviderConfig {
             volcano_access_key: String::new(),
             volcano_secret_key: String::new(),
             volcano_region: default_volcano_region(),
+            apps_script_url: String::new(),
+            apps_script_token: String::new(),
+            apps_script_proxy: String::new(),
         }
     }
 }
@@ -88,6 +99,7 @@ pub fn provider_display_name(id: &str) -> &'static str {
         "libre" => "LibreTranslate",
         "baidu" => "百度翻译",
         "volcano" => "火山引擎机器翻译",
+        "appsscript" => "Google Apps Script 自建翻译",
         _ => "未知服务",
     }
 }
@@ -122,6 +134,7 @@ pub struct LibreProvider;
 pub struct TencentProvider;
 pub struct BaiduProvider;
 pub struct VolcanoProvider;
+pub struct AppsScriptProvider;
 
 pub fn make_provider(id: &str) -> Option<Box<dyn TranslationProvider>> {
     match id {
@@ -132,6 +145,7 @@ pub fn make_provider(id: &str) -> Option<Box<dyn TranslationProvider>> {
         "libre" => Some(Box::new(LibreProvider)),
         "baidu" => Some(Box::new(BaiduProvider)),
         "volcano" => Some(Box::new(VolcanoProvider)),
+        "appsscript" => Some(Box::new(AppsScriptProvider)),
         _ => None,
     }
 }
@@ -253,6 +267,36 @@ pub fn parse_baidu(body: &Value) -> Result<String, String> {
         .filter(|s| !s.trim().is_empty())
         .map(|s| s.to_string())
         .ok_or_else(|| "百度翻译没有返回译文".to_string())
+}
+
+/// 解析 Google Apps Script 自建翻译的响应：
+/// 成功 {"code":200,"translatedText":"..."}（批量时 translatedText 为数组），
+/// 失败 {"code":非200,"error":"原因"}。
+pub fn parse_apps_script(body: &Value) -> Result<String, String> {
+    let code = body.get("code").and_then(Value::as_i64).unwrap_or(0);
+    if code != 200 {
+        let message = body
+            .get("error")
+            .and_then(Value::as_str)
+            .filter(|s| !s.trim().is_empty())
+            .unwrap_or("Apps Script 接口返回错误");
+        return Err(format!("Apps Script 翻译失败（code {}）：{}", code, message));
+    }
+    match body.get("translatedText") {
+        Some(Value::String(s)) if !s.trim().is_empty() => Ok(s.clone()),
+        Some(Value::Array(items)) => {
+            let parts: Vec<String> = items
+                .iter()
+                .filter_map(|v| v.as_str().map(|s| s.to_string()))
+                .collect();
+            if parts.is_empty() {
+                Err("Apps Script 响应里没有译文".to_string())
+            } else {
+                Ok(parts.join("\n"))
+            }
+        }
+        _ => Err("Apps Script 响应里没有译文".to_string()),
+    }
 }
 
 pub fn parse_volcano(body: &Value) -> Result<String, String> {
@@ -498,6 +542,72 @@ mod md5 {
         out[8..12].copy_from_slice(&c0.to_le_bytes());
         out[12..16].copy_from_slice(&d0.to_le_bytes());
         out
+    }
+}
+
+// ---------- Google Apps Script 自建翻译 ----------
+// 用户自己部署的 Apps Script 网络应用：POST {部署地址/exec}，
+// JSON 体 {token, text, source, target}，语言代码用 BCP-47（zh 要写成 zh-CN）。
+// script.google.com 会 302 跳转到 googleusercontent 取结果，reqwest 默认跟随跳转。
+// 本地网络无法直连 Google 时可在配置里填本地代理（仅该引擎使用独立 client）。
+
+#[async_trait::async_trait]
+impl TranslationProvider for AppsScriptProvider {
+    fn id(&self) -> &'static str {
+        "appsscript"
+    }
+    async fn translate(
+        &self,
+        client: &reqwest::Client,
+        text: &str,
+        source: &str,
+        target: &str,
+        config: &ProviderConfig,
+    ) -> Result<String, String> {
+        let url = config.apps_script_url.trim();
+        if url.is_empty() {
+            return Err("尚未配置 Apps Script 部署地址：请打开配置窗口填写以 /exec 结尾的部署地址（或切换其他翻译服务）".to_string());
+        }
+        if !url.starts_with("https://script.google.com/") || !url.ends_with("/exec") {
+            return Err("Apps Script 地址格式不对：应为 https://script.google.com/macros/s/.../exec".to_string());
+        }
+        let map_lang = |code: &str| if code == "zh" { "zh-CN".to_string() } else { code.to_string() };
+        let payload = json!({
+            "token": config.apps_script_token.trim(),
+            "text": text,
+            "source": map_lang(source),
+            "target": map_lang(target),
+        });
+        // 配置了代理时为该引擎单独建 client，否则用共享 client
+        let proxy = config.apps_script_proxy.trim();
+        let own_client;
+        let active_client: &reqwest::Client = if proxy.is_empty() {
+            client
+        } else {
+            let parsed = reqwest::Proxy::all(proxy)
+                .map_err(|_| "代理地址格式不对，应形如 http://127.0.0.1:4602".to_string())?;
+            own_client = reqwest::Client::builder()
+                .timeout(std::time::Duration::from_secs(config.timeout_secs.clamp(3, 30)))
+                .proxy(parsed)
+                .build()
+                .map_err(|_| "无法按所填代理创建网络客户端".to_string())?;
+            &own_client
+        };
+        let resp = active_client
+            .post(url)
+            .json(&payload)
+            .send()
+            .await
+            .map_err(|e| net_error("Apps Script", &e))?;
+        let status = resp.status();
+        let body: Value = resp
+            .json()
+            .await
+            .map_err(|_| format!("Apps Script 返回了无法解析的响应（HTTP {}）", status.as_u16()))?;
+        if !status.is_success() && body.get("code").is_none() {
+            return Err(format!("Apps Script 请求失败（HTTP {}）", status.as_u16()));
+        }
+        parse_apps_script(&body)
     }
 }
 
@@ -975,6 +1085,18 @@ mod tests {
         assert_eq!(c.provider, "tencent");
         assert_eq!(c.fallback_provider, "google");
         assert_eq!(c.tencent_region, "ap-guangzhou");
+    }
+
+    #[test]
+    fn parses_apps_script_shapes() {
+        let ok = json!({"code": 200, "source": "zh-CN", "target": "en", "translatedText": "System initialization complete"});
+        assert_eq!(parse_apps_script(&ok).unwrap(), "System initialization complete");
+        let batch = json!({"code": 200, "translatedText": ["Incorrect account or password", "Operation succeeded"]});
+        assert_eq!(parse_apps_script(&batch).unwrap(), "Incorrect account or password\nOperation succeeded");
+        let err = json!({"code": 401, "error": "invalid token"});
+        assert!(parse_apps_script(&err).unwrap_err().contains("invalid token"));
+        let empty = json!({"code": 200, "translatedText": ""});
+        assert!(parse_apps_script(&empty).is_err());
     }
 
     #[test]

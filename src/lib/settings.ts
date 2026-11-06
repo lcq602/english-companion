@@ -1,5 +1,5 @@
 // English Companion 设置（本地保存，不上传；密钥只存本机 WebView 本地存储，从不写入日志）。
-export type ProviderId = "tencent" | "google" | "microsoft" | "mymemory" | "libre" | "baidu" | "volcano";
+export type ProviderId = "tencent" | "google" | "microsoft" | "mymemory" | "libre" | "baidu" | "volcano" | "appsscript";
 
 export type AppSettings = {
   // 翻译服务
@@ -18,6 +18,9 @@ export type AppSettings = {
   volcanoAccessKey: string;
   volcanoSecretKey: string;
   volcanoRegion: string;
+  appsScriptUrl: string;
+  appsScriptToken: string;
+  appsScriptProxy: string;
   timeoutSecs: number;
   // 显示窗
   alwaysOnTop: boolean;
@@ -42,6 +45,9 @@ export const DEFAULT_SETTINGS: AppSettings = {
   volcanoAccessKey: "",
   volcanoSecretKey: "",
   volcanoRegion: "cn-north-1",
+  appsScriptUrl: "",
+  appsScriptToken: "",
+  appsScriptProxy: "",
   timeoutSecs: 10,
   alwaysOnTop: true,
   opacity: 0.92,
@@ -83,6 +89,9 @@ export function toProviderConfig(settings: AppSettings) {
     volcano_access_key: settings.volcanoAccessKey,
     volcano_secret_key: settings.volcanoSecretKey,
     volcano_region: settings.volcanoRegion,
+    apps_script_url: settings.appsScriptUrl,
+    apps_script_token: settings.appsScriptToken,
+    apps_script_proxy: settings.appsScriptProxy,
   };
 }
 
@@ -94,4 +103,5 @@ export const PROVIDER_NOTES: Record<ProviderId, string> = {
   libre: "开源可自建。填自建服务地址即可免 Key 使用；官方公共站现需付费 Key。",
   baidu: "百度翻译开放平台：国内直连、速度快。需在 fanyi-api.baidu.com 注册拿 APP ID + 密钥；未认证每月 5 万字符免费，个人实名认证升高级版后每月 100 万字符免费，超出 49 元/百万字符。",
   volcano: "火山引擎机器翻译（字节跳动）：国内直连、速度快。需在火山引擎控制台开通机器翻译并创建 AccessKey；每月前 200 万字符免费，超出约 49 元/百万字符，免费额度是目前最慷慨的。",
+  appsscript: "你自己部署的 Google Apps Script 翻译服务：填部署地址（以 /exec 结尾）和脚本里设定的 Token。走 Google 服务器，本地无法直连时可在下方填本地代理地址（如 http://127.0.0.1:4602）。注意要填 /exec 部署地址，不要填打开后跳转的 googleusercontent 临时链接。",
 };

@@ -23,6 +23,7 @@ const providers: { id: ProviderId; label: string }[] = [
   { id: "microsoft", label: "Microsoft Translator（官方，需 Key）" },
   { id: "mymemory", label: "MyMemory（免费）" },
   { id: "libre", label: "LibreTranslate（可自建）" },
+  { id: "appsscript", label: "Google Apps Script 自建翻译（填部署地址）" },
 ];
 const showTencent = computed(() => draft.value.provider === "tencent" || draft.value.fallbackProvider === "tencent");
 const showMicrosoft = computed(() => draft.value.provider === "microsoft" || draft.value.fallbackProvider === "microsoft");
@@ -30,6 +31,7 @@ const showLibre = computed(() => draft.value.provider === "libre" || draft.value
 const showMyMemory = computed(() => draft.value.provider === "mymemory" || draft.value.fallbackProvider === "mymemory");
 const showBaidu = computed(() => draft.value.provider === "baidu" || draft.value.fallbackProvider === "baidu");
 const showVolcano = computed(() => draft.value.provider === "volcano" || draft.value.fallbackProvider === "volcano");
+const showAppsScript = computed(() => draft.value.provider === "appsscript" || draft.value.fallbackProvider === "appsscript");
 
 async function save() {
   saveSettings(draft.value);
@@ -138,6 +140,14 @@ onMounted(async () => {
         <label>APP ID<input v-model="draft.baiduAppId" placeholder="百度翻译 APP ID" autocomplete="off" /></label>
         <label>密钥<input v-model="draft.baiduKey" type="password" placeholder="百度翻译密钥" autocomplete="off" /></label>
         <p class="note">到 fanyi-api.baidu.com 注册并开通通用翻译 API，在管理控制台查看 APP ID 和密钥。未认证每月 5 万字符免费；做个人实名认证升高级版后每月 100 万字符免费。</p>
+      </template>
+
+      <template v-if="showAppsScript">
+        <h3>Google Apps Script 自建翻译</h3>
+        <label>部署地址<input v-model="draft.appsScriptUrl" placeholder="https://script.google.com/macros/s/.../exec" autocomplete="off" /></label>
+        <label>Token<input v-model="draft.appsScriptToken" type="password" placeholder="脚本里设定的 token" autocomplete="off" /></label>
+        <label>本地代理（可选）<input v-model="draft.appsScriptProxy" placeholder="无法直连 Google 时填，如 http://127.0.0.1:4602" autocomplete="off" /></label>
+        <p class="note">填部署得到的 /exec 地址，不要填打开后跳转的 googleusercontent 临时链接（那个会过期）。代理只对这个引擎生效。</p>
       </template>
 
       <template v-if="showMicrosoft">
