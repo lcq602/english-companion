@@ -1,0 +1,67 @@
+name: Build Windows (Win10 22H2 compatible)
+
+# 阶段 6：在 Windows runner 上打包。windows-2022 的工具链与 WebView2 引导安装
+# 保证产物可在 Windows 10 22H2 上运行（Tauri 2 官方支持 Win10 1803+）。
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  workflow_dispatch:
+
+jobs:
+  test-and-build:
+    runs-on: windows-2022
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Rust cache
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - name: Install frontend deps
+        run: npm ci
+
+      - name: Frontend tests
+        run: npm test
+
+      - name: Frontend build check
+        run: npm run build
+
+      - name: Rust tests
+        run: cargo test --manifest-path src-tauri/Cargo.toml
+
+      - name: Build Tauri app (NSIS installer + portable exe)
+        run: npm run tauri build -- --bundles nsis
+
+      - name: Collect outputs
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path release-files | Out-Null
+          Copy-Item "src-tauri/target/release/english-companion.exe" "release-files/EnglishCompanion-portable.exe"
+          Get-ChildItem "src-tauri/target/release/bundle/nsis/*.exe" | Copy-Item -Destination "release-files/EnglishCompanion-setup.exe"
+          Get-ChildItem release-files
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: english-companion-windows
+          path: release-files/*
+
+      - name: Publish release v1.0.0
+        if: github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v')
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release view v1.0.0 2>$null; if ($LASTEXITCODE -ne 0) { gh release create v1.0.0 --title "English Companion v1.0.0" --notes "Windows desktop real-time translation companion. Free machine translation only (no LLM). Portable exe + NSIS installer, Windows 10 22H2 / Windows 11." }
+          gh release upload v1.0.0 release-files/EnglishCompanion-portable.exe release-files/EnglishCompanion-setup.exe --clobber
