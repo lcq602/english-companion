@@ -6,6 +6,10 @@
 //! - microsoft : Microsoft Translator 官方 API，需要用户自备 API Key（免费额度 F0 每月 200 万字符）。
 //! - mymemory  : MyMemory 免费接口，匿名约 1000 词/天，填邮箱可提升到约 10000 词/天。
 //! - libre     : LibreTranslate，用户自建服务地址（默认官方演示站，新版需 Key），开源可自托管。
+//! - baidu     : 百度翻译开放平台，国内直连。需 APP ID + 密钥；未认证每月 5 万字符免费，
+//!               个人实名认证升高级版后每月 100 万字符免费，超出 49 元/百万字符。
+//! - volcano   : 火山引擎机器翻译（字节跳动），国内直连。需 AccessKey + SecretKey；
+//!               每月前 200 万字符免费，超出约 49 元/百万字符。
 
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -15,7 +19,7 @@ use crate::terms;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProviderConfig {
-    pub provider: String,          // tencent | google | microsoft | mymemory | libre
+    pub provider: String,          // tencent | google | microsoft | mymemory | libre | baidu | volcano
     pub fallback_provider: String, // 同上，空字符串表示不启用备用
     pub microsoft_key: String,
     pub microsoft_region: String,
@@ -30,6 +34,22 @@ pub struct ProviderConfig {
     pub tencent_secret_key: String,
     #[serde(default = "default_tencent_region")]
     pub tencent_region: String,
+    // 百度翻译开放平台（v1.2 新增）：APP ID + 密钥
+    #[serde(default)]
+    pub baidu_app_id: String,
+    #[serde(default)]
+    pub baidu_key: String,
+    // 火山引擎机器翻译（v1.2 新增）：AccessKey + SecretKey
+    #[serde(default)]
+    pub volcano_access_key: String,
+    #[serde(default)]
+    pub volcano_secret_key: String,
+    #[serde(default = "default_volcano_region")]
+    pub volcano_region: String,
+}
+
+fn default_volcano_region() -> String {
+    "cn-north-1".to_string()
 }
 
 fn default_tencent_region() -> String {
@@ -50,6 +70,11 @@ impl Default for ProviderConfig {
             tencent_secret_id: String::new(),
             tencent_secret_key: String::new(),
             tencent_region: default_tencent_region(),
+            baidu_app_id: String::new(),
+            baidu_key: String::new(),
+            volcano_access_key: String::new(),
+            volcano_secret_key: String::new(),
+            volcano_region: default_volcano_region(),
         }
     }
 }
@@ -61,6 +86,8 @@ pub fn provider_display_name(id: &str) -> &'static str {
         "microsoft" => "Microsoft Translator",
         "mymemory" => "MyMemory（免费备用）",
         "libre" => "LibreTranslate",
+        "baidu" => "百度翻译",
+        "volcano" => "火山引擎机器翻译",
         _ => "未知服务",
     }
 }
@@ -93,6 +120,8 @@ pub struct MicrosoftProvider;
 pub struct MyMemoryProvider;
 pub struct LibreProvider;
 pub struct TencentProvider;
+pub struct BaiduProvider;
+pub struct VolcanoProvider;
 
 pub fn make_provider(id: &str) -> Option<Box<dyn TranslationProvider>> {
     match id {
@@ -101,6 +130,8 @@ pub fn make_provider(id: &str) -> Option<Box<dyn TranslationProvider>> {
         "microsoft" => Some(Box::new(MicrosoftProvider)),
         "mymemory" => Some(Box::new(MyMemoryProvider)),
         "libre" => Some(Box::new(LibreProvider)),
+        "baidu" => Some(Box::new(BaiduProvider)),
+        "volcano" => Some(Box::new(VolcanoProvider)),
         _ => None,
     }
 }
@@ -197,6 +228,60 @@ pub fn parse_microsoft(body: &Value) -> Result<String, String> {
         .filter(|s| !s.trim().is_empty())
         .map(|s| s.to_string())
         .ok_or_else(|| "Microsoft Translator 没有返回译文".to_string())
+}
+
+pub fn parse_baidu(body: &Value) -> Result<String, String> {
+    if let Some(code) = body.get("error_code").and_then(Value::as_str) {
+        let msg = body
+            .get("error_msg")
+            .and_then(Value::as_str)
+            .unwrap_or("未知错误");
+        let hint = match code {
+            "52003" => "：请检查配置里的 APP ID / 密钥是否正确",
+            "54001" => "：签名错误，请检查密钥是否填错",
+            "54003" => "：请求太频繁（标准版限 1 次/秒），请稍后再试",
+            "54004" => "：账户余额不足或免费额度已用完",
+            "58002" => "：翻译服务当前已关闭，请到百度翻译开放平台控制台检查",
+            _ => "",
+        };
+        return Err(format!("百度翻译失败（{}）：{}{}", code, msg, hint));
+    }
+    body.get("trans_result")
+        .and_then(|r| r.get(0))
+        .and_then(|t| t.get("dst"))
+        .and_then(Value::as_str)
+        .filter(|s| !s.trim().is_empty())
+        .map(|s| s.to_string())
+        .ok_or_else(|| "百度翻译没有返回译文".to_string())
+}
+
+pub fn parse_volcano(body: &Value) -> Result<String, String> {
+    if let Some(err) = body
+        .get("ResponseMetadata")
+        .and_then(|m| m.get("Error"))
+    {
+        let code = err.get("Code").and_then(Value::as_str).unwrap_or("Unknown");
+        let message = err.get("Message").and_then(Value::as_str).unwrap_or("未知错误");
+        let hint = match code {
+            "InvalidAccessKeyId" | "SignatureDoesNotMatch" => {
+                "：请检查配置里的 AccessKey / SecretKey 是否正确"
+            }
+            "InvalidActionOrVersion" => "：接口版本异常，请更新软件",
+            "MissingParameter" | "InvalidParameter" => "：请求参数异常",
+            "FlowLimitExceeded" | "RequestLimitExceeded" => "：请求太频繁，请稍后再试",
+            "ServiceUnavailable" => "：火山服务暂不可用，请稍后再试",
+            _ => "",
+        };
+        return Err(format!("火山引擎翻译失败（{}）：{}{}", code, message, hint));
+    }
+    body.get("Result")
+        .and_then(|r| r.get("TranslationList"))
+        .and_then(|l| l.get(0))
+        .and_then(|t| t.get("Translation"))
+        .and_then(Value::as_str)
+        .filter(|s| !s.trim().is_empty())
+        .map(|s| s.to_string())
+        .ok_or_else(|| "火山引擎没有返回译文".to_string())
 }
 
 // ---------- 腾讯云 TMT（TC3-HMAC-SHA256 签名，移植自原 TranslationControl 项目的实现） ----------
@@ -326,7 +411,141 @@ impl TranslationProvider for TencentProvider {
     }
 }
 
-// ---------- 各服务实现 ----------
+/// MD5（RFC 1321）纯 Rust 实现，供百度翻译签名使用，避免新增依赖。
+mod md5 {
+    const S: [u32; 64] = [
+        7, 12, 17, 22, 7, 12, 17, 22, 7, 12, 17, 22, 7, 12, 17, 22,
+        5, 9, 14, 20, 5, 9, 14, 20, 5, 9, 14, 20, 5, 9, 14, 20,
+        4, 11, 16, 23, 4, 11, 16, 23, 4, 11, 16, 23, 4, 11, 16, 23,
+        6, 10, 15, 21, 6, 10, 15, 21, 6, 10, 15, 21, 6, 10, 15, 21,
+    ];
+    const K: [u32; 64] = [
+        0xd76aa478, 0xe8c7b756, 0x242070db, 0xc1bdceee,
+        0xf57c0faf, 0x4787c62a, 0xa8304613, 0xfd469501,
+        0x698098d8, 0x8b44f7af, 0xffff5bb1, 0x895cd7be,
+        0x6b901122, 0xfd987193, 0xa679438e, 0x49b40821,
+        0xf61e2562, 0xc040b340, 0x265e5a51, 0xe9b6c7aa,
+        0xd62f105d, 0x02441453, 0xd8a1e681, 0xe7d3fbc8,
+        0x21e1cde6, 0xc33707d6, 0xf4d50d87, 0x455a14ed,
+        0xa9e3e905, 0xfcefa3f8, 0x676f02d9, 0x8d2a4c8a,
+        0xfffa3942, 0x8771f681, 0x6d9d6122, 0xfde5380c,
+        0xa4beea44, 0x4bdecfa9, 0xf6bb4b60, 0xbebfbc70,
+        0x289b7ec6, 0xeaa127fa, 0xd4ef3085, 0x04881d05,
+        0xd9d4d039, 0xe6db99e5, 0x1fa27cf8, 0xc4ac5665,
+        0xf4292244, 0x432aff97, 0xab9423a7, 0xfc93a039,
+        0x655b59c3, 0x8f0ccc92, 0xffeff47d, 0x85845dd1,
+        0x6fa87e4f, 0xfe2ce6e0, 0xa3014314, 0x4e0811a1,
+        0xf7537e82, 0xbd3af235, 0x2ad7d2bb, 0xeb86d391,
+    ];
+
+    pub fn hex(input: &str) -> String {
+        compute(input.as_bytes())
+            .iter()
+            .map(|b| format!("{:02x}", b))
+            .collect()
+    }
+
+    fn compute(input: &[u8]) -> [u8; 16] {
+        let mut a0: u32 = 0x67452301;
+        let mut b0: u32 = 0xefcdab89;
+        let mut c0: u32 = 0x98badcfe;
+        let mut d0: u32 = 0x10325476;
+
+        let mut msg = input.to_vec();
+        let bit_len = (input.len() as u64).wrapping_mul(8);
+        msg.push(0x80);
+        while msg.len() % 64 != 56 {
+            msg.push(0);
+        }
+        msg.extend_from_slice(&bit_len.to_le_bytes());
+
+        for chunk in msg.chunks_exact(64) {
+            let mut m = [0u32; 16];
+            for (i, word) in m.iter_mut().enumerate() {
+                *word = u32::from_le_bytes([
+                    chunk[i * 4],
+                    chunk[i * 4 + 1],
+                    chunk[i * 4 + 2],
+                    chunk[i * 4 + 3],
+                ]);
+            }
+            let (mut a, mut b, mut c, mut d) = (a0, b0, c0, d0);
+            for i in 0..64 {
+                let (mut f, g) = match i / 16 {
+                    0 => ((b & c) | (!b & d), i),
+                    1 => ((d & b) | (!d & c), (5 * i + 1) % 16),
+                    2 => (b ^ c ^ d, (3 * i + 5) % 16),
+                    _ => (c ^ (b | !d), (7 * i) % 16),
+                };
+                f = f
+                    .wrapping_add(a)
+                    .wrapping_add(K[i])
+                    .wrapping_add(m[g]);
+                a = d;
+                d = c;
+                c = b;
+                b = b.wrapping_add(f.rotate_left(S[i]));
+            }
+            a0 = a0.wrapping_add(a);
+            b0 = b0.wrapping_add(b);
+            c0 = c0.wrapping_add(c);
+            d0 = d0.wrapping_add(d);
+        }
+
+        let mut out = [0u8; 16];
+        out[0..4].copy_from_slice(&a0.to_le_bytes());
+        out[4..8].copy_from_slice(&b0.to_le_bytes());
+        out[8..12].copy_from_slice(&c0.to_le_bytes());
+        out[12..16].copy_from_slice(&d0.to_le_bytes());
+        out
+    }
+}
+
+// ---------- 火山引擎机器翻译（SignV4，HMAC-SHA256） ----------
+
+mod volcano_sign {
+    use super::tencent_sign::{hmac_sha256, sha256_hex};
+
+    /// 生成 Authorization 头（时间由调用方传入，便于测试）。
+    /// datetime 形如 20261106T045900Z，date 形如 20261106。
+    pub fn authorization(
+        access_key: &str,
+        secret_key: &str,
+        region: &str,
+        payload: &str,
+        datetime: &str,
+        date: &str,
+    ) -> String {
+        const HOST: &str = "translate.volcengineapi.com";
+        const SERVICE: &str = "translate";
+        let payload_hash = sha256_hex(payload);
+        let canonical_headers = format!(
+            "content-type:application/json\nhost:{}\nx-content-sha256:{}\nx-date:{}\n",
+            HOST, payload_hash, datetime
+        );
+        let signed_headers = "content-type;host;x-content-sha256;x-date";
+        let canonical_request = format!(
+            "POST\n/\nAction=TranslateText&Version=2020-06-01\n{}\n{}\n{}",
+            canonical_headers, signed_headers, payload_hash
+        );
+        let credential_scope = format!("{}/{}/{}/request", date, region, SERVICE);
+        let string_to_sign = format!(
+            "HMAC-SHA256\n{}\n{}\n{}",
+            datetime,
+            credential_scope,
+            sha256_hex(&canonical_request)
+        );
+        let k_date = hmac_sha256(format!("VOLC{}", secret_key).as_bytes(), date);
+        let k_region = hmac_sha256(&k_date, region);
+        let k_service = hmac_sha256(&k_region, SERVICE);
+        let k_signing = hmac_sha256(&k_service, "request");
+        let signature = hex::encode(hmac_sha256(&k_signing, &string_to_sign));
+        format!(
+            "HMAC-SHA256 Credential={}/{}, SignedHeaders={}, Signature={}",
+            access_key, credential_scope, signed_headers, signature
+        )
+    }
+}
 
 #[async_trait::async_trait]
 impl TranslationProvider for GoogleProvider {
@@ -488,6 +707,133 @@ impl TranslationProvider for LibreProvider {
         }
         let body: Value = resp.json().await.map_err(|_| "LibreTranslate 返回无法解析".to_string())?;
         parse_libre(&body)
+    }
+}
+
+#[async_trait::async_trait]
+impl TranslationProvider for BaiduProvider {
+    fn id(&self) -> &'static str {
+        "baidu"
+    }
+    async fn translate(
+        &self,
+        client: &reqwest::Client,
+        text: &str,
+        source: &str,
+        target: &str,
+        config: &ProviderConfig,
+    ) -> Result<String, String> {
+        let app_id = config.baidu_app_id.trim();
+        let key = config.baidu_key.trim();
+        if app_id.is_empty() || key.is_empty() {
+            return Err("尚未配置百度翻译的 APP ID / 密钥：请到 fanyi-api.baidu.com 注册后在配置窗口填写（或切换到其他翻译服务）".to_string());
+        }
+        // 签名 = MD5(appid + q + salt + 密钥)，q 参与签名时不做 URL 编码（百度文档口径）。
+        let salt = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis().to_string())
+            .unwrap_or_else(|_| "1".to_string());
+        let sign = md5::hex(&format!("{}{}{}{}", app_id, text, salt, key));
+        let resp = client
+            .get("https://fanyi-api.baidu.com/api/trans/vip/translate")
+            .query(&[
+                ("q", text),
+                ("from", source),
+                ("to", target),
+                ("appid", app_id),
+                ("salt", salt.as_str()),
+                ("sign", sign.as_str()),
+            ])
+            .send()
+            .await
+            .map_err(|e| net_error("百度翻译", &e))?;
+        let status = resp.status();
+        if !status.is_success() {
+            return Err(format!("百度翻译请求失败（HTTP {}）", status.as_u16()));
+        }
+        let body: Value = resp.json().await.map_err(|_| "百度翻译返回无法解析".to_string())?;
+        parse_baidu(&body)
+    }
+}
+
+#[async_trait::async_trait]
+impl TranslationProvider for VolcanoProvider {
+    fn id(&self) -> &'static str {
+        "volcano"
+    }
+    async fn translate(
+        &self,
+        client: &reqwest::Client,
+        text: &str,
+        source: &str,
+        target: &str,
+        config: &ProviderConfig,
+    ) -> Result<String, String> {
+        use reqwest::header::{HeaderValue, AUTHORIZATION, CONTENT_TYPE};
+        let access_key = config.volcano_access_key.trim();
+        let secret_key = config.volcano_secret_key.trim();
+        if access_key.is_empty() || secret_key.is_empty() {
+            return Err("尚未配置火山引擎的 AccessKey：请到火山引擎控制台开通机器翻译并创建密钥后在配置窗口填写（或切换到其他翻译服务）".to_string());
+        }
+        let region = if config.volcano_region.trim().is_empty() {
+            "cn-north-1"
+        } else {
+            config.volcano_region.trim()
+        };
+        let now = time::OffsetDateTime::now_utc();
+        let date = format!("{:04}{:02}{:02}", now.year(), now.month() as u8, now.day());
+        let datetime = format!(
+            "{}T{:02}{:02}{:02}Z",
+            date,
+            now.hour(),
+            now.minute(),
+            now.second()
+        );
+        let payload = serde_json::to_string(&json!({
+            "SourceLanguage": source,
+            "TargetLanguage": target,
+            "TextList": [text],
+        }))
+        .map_err(|_| "无法生成火山引擎请求".to_string())?;
+        let authorization = volcano_sign::authorization(
+            access_key,
+            secret_key,
+            region,
+            &payload,
+            &datetime,
+            &date,
+        );
+        let payload_hash = tencent_sign::sha256_hex(&payload);
+        let resp = client
+            .post("https://translate.volcengineapi.com/?Action=TranslateText&Version=2020-06-01")
+            .header(CONTENT_TYPE, HeaderValue::from_static("application/json"))
+            .header(
+                "X-Date",
+                HeaderValue::from_str(&datetime).map_err(|_| "时间格式无效".to_string())?,
+            )
+            .header(
+                "X-Content-Sha256",
+                HeaderValue::from_str(&payload_hash).map_err(|_| "火山引擎签名生成失败".to_string())?,
+            )
+            .header(
+                AUTHORIZATION,
+                HeaderValue::from_str(&authorization).map_err(|_| "火山引擎签名生成失败".to_string())?,
+            )
+            .body(payload)
+            .send()
+            .await
+            .map_err(|e| net_error("火山引擎", &e))?;
+        let status = resp.status();
+        let body: Value = resp.json().await.map_err(|_| "火山引擎返回了无法解析的响应".to_string())?;
+        if !status.is_success()
+            && body
+                .get("ResponseMetadata")
+                .and_then(|m| m.get("Error"))
+                .is_none()
+        {
+            return Err(format!("火山引擎请求失败（HTTP {}）", status.as_u16()));
+        }
+        parse_volcano(&body)
     }
 }
 
@@ -685,5 +1031,85 @@ mod tests {
         assert_eq!(lang_for("google", "zh"), "zh-CN");
         assert_eq!(lang_for("libre", "zh"), "zh");
         assert_eq!(lang_for("microsoft", "en"), "en");
+    }
+
+    #[test]
+    fn md5_vectors() {
+        // RFC 1321 附录 A 的测试向量
+        assert_eq!(md5::hex(""), "d41d8cd98f00b204e9800998ecf8427e");
+        assert_eq!(md5::hex("abc"), "900150983cd24fb0d6963f7d28e17f72");
+        assert_eq!(
+            md5::hex("The quick brown fox jumps over the lazy dog"),
+            "9e107d9d372bb6826bd81d3542a419d6"
+        );
+        assert_eq!(
+            md5::hex("abcdbcdecdefdefgefghfghighijhijkijkljklmklmnlmnomnopnopq"),
+            "8215ef0796a20bcaaae116d3876c664a"
+        );
+        // 中文输入同样稳定输出 32 位小写十六进制
+        let zh = md5::hex("你好世界");
+        assert_eq!(zh.len(), 32);
+        assert!(zh.chars().all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase()));
+    }
+
+    #[test]
+    fn baidu_sign_is_md5_of_appid_q_salt_key() {
+        // sign = MD5(appid+q+salt+key)，与百度文档口径一致；此处只验公式形状与确定性
+        let a = md5::hex(&format!("{}{}{}{}", "20151231000008489", "apple", "1435660288", "12345678"));
+        let b = md5::hex(&format!("{}{}{}{}", "20151231000008489", "apple", "1435660288", "12345678"));
+        assert_eq!(a, b);
+        assert_eq!(a.len(), 32);
+    }
+
+    #[test]
+    fn parses_baidu_ok_and_errors() {
+        let ok = json!({"from": "zh", "to": "en", "trans_result": [{"src": "你好", "dst": "Hello"}]});
+        assert_eq!(parse_baidu(&ok).unwrap(), "Hello");
+        let quota = json!({"error_code": "54004", "error_msg": "Invalid Account"});
+        assert!(parse_baidu(&quota).unwrap_err().contains("额度"));
+        let sign = json!({"error_code": "54001", "error_msg": "Invalid Sign"});
+        assert!(parse_baidu(&sign).unwrap_err().contains("签名"));
+        let auth = json!({"error_code": "52003", "error_msg": "Unauthorized user"});
+        assert!(parse_baidu(&auth).unwrap_err().contains("APP ID"));
+    }
+
+    #[test]
+    fn parses_volcano_ok_and_errors() {
+        let ok = json!({"ResponseMetadata": {"Result": "OK"}, "Result": {"TranslationList": [{"Translation": "Hello", "DetectedSourceLanguage": "zh"}]}});
+        assert_eq!(parse_volcano(&ok).unwrap(), "Hello");
+        let err = json!({"ResponseMetadata": {"Error": {"Code": "SignatureDoesNotMatch", "Message": "bad sig"}}, "Result": {}});
+        assert!(parse_volcano(&err).unwrap_err().contains("AccessKey"));
+        let empty = json!({"ResponseMetadata": {"Result": "OK"}, "Result": {"TranslationList": []}});
+        assert!(parse_volcano(&empty).is_err());
+    }
+
+    #[test]
+    fn volcano_authorization_shape() {
+        let auth = super::volcano_sign::authorization(
+            "AKTEST",
+            "secret",
+            "cn-north-1",
+            "{}",
+            "20261106T045900Z",
+            "20261106",
+        );
+        assert!(auth.starts_with("HMAC-SHA256 Credential=AKTEST/20261106/cn-north-1/translate/request, SignedHeaders=content-type;host;x-content-sha256;x-date, Signature="));
+        let sig = auth.rsplit("Signature=").next().unwrap();
+        assert_eq!(sig.len(), 64);
+        assert!(sig.chars().all(|c| c.is_ascii_hexdigit()));
+    }
+
+    #[test]
+    fn new_providers_resolve_and_have_defaults() {
+        assert!(make_provider("baidu").is_some());
+        assert!(make_provider("volcano").is_some());
+        assert_eq!(make_provider("baidu").unwrap().id(), "baidu");
+        assert_eq!(make_provider("volcano").unwrap().id(), "volcano");
+        let c = ProviderConfig::default();
+        assert_eq!(c.volcano_region, "cn-north-1");
+        assert!(c.baidu_app_id.is_empty());
+        assert!(c.volcano_access_key.is_empty());
+        assert_eq!(provider_display_name("baidu"), "百度翻译");
+        assert_eq!(provider_display_name("volcano"), "火山引擎机器翻译");
     }
 }

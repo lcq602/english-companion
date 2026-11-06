@@ -17,6 +17,8 @@ const savedHint = ref("");
 
 const providers: { id: ProviderId; label: string }[] = [
   { id: "tencent", label: "腾讯云机器翻译（默认，国内快）" },
+  { id: "volcano", label: "火山引擎机器翻译（每月 200 万字符免费，国内快）" },
+  { id: "baidu", label: "百度翻译（国内快，需 APP ID）" },
   { id: "google", label: "Google Translate（非官方免费接口）" },
   { id: "microsoft", label: "Microsoft Translator（官方，需 Key）" },
   { id: "mymemory", label: "MyMemory（免费）" },
@@ -26,6 +28,8 @@ const showTencent = computed(() => draft.value.provider === "tencent" || draft.v
 const showMicrosoft = computed(() => draft.value.provider === "microsoft" || draft.value.fallbackProvider === "microsoft");
 const showLibre = computed(() => draft.value.provider === "libre" || draft.value.fallbackProvider === "libre");
 const showMyMemory = computed(() => draft.value.provider === "mymemory" || draft.value.fallbackProvider === "mymemory");
+const showBaidu = computed(() => draft.value.provider === "baidu" || draft.value.fallbackProvider === "baidu");
+const showVolcano = computed(() => draft.value.provider === "volcano" || draft.value.fallbackProvider === "volcano");
 
 async function save() {
   saveSettings(draft.value);
@@ -119,6 +123,21 @@ onMounted(async () => {
         <label>SecretKey<input v-model="draft.tencentSecretKey" type="password" placeholder="腾讯云密钥" autocomplete="off" /></label>
         <label>地域<input v-model="draft.tencentRegion" placeholder="ap-guangzhou" autocomplete="off" /></label>
         <p class="note">密钥在腾讯云控制台「访问管理 → API 密钥管理」创建。每月免费额度用完会报 NoFreeAmount，需在机器翻译控制台开通后付费或购买资源包。</p>
+      </template>
+
+      <template v-if="showVolcano">
+        <h3>火山引擎机器翻译</h3>
+        <label>AccessKey ID<input v-model="draft.volcanoAccessKey" placeholder="AK..." autocomplete="off" /></label>
+        <label>Secret AccessKey<input v-model="draft.volcanoSecretKey" type="password" placeholder="火山引擎密钥" autocomplete="off" /></label>
+        <label>地域<input v-model="draft.volcanoRegion" placeholder="cn-north-1" autocomplete="off" /></label>
+        <p class="note">先在火山引擎控制台开通机器翻译服务，再到「访问控制 → 密钥管理」创建 AccessKey（建议用子用户并授予 TranslateFullAccess 权限）。每月前 200 万字符免费。</p>
+      </template>
+
+      <template v-if="showBaidu">
+        <h3>百度翻译</h3>
+        <label>APP ID<input v-model="draft.baiduAppId" placeholder="百度翻译 APP ID" autocomplete="off" /></label>
+        <label>密钥<input v-model="draft.baiduKey" type="password" placeholder="百度翻译密钥" autocomplete="off" /></label>
+        <p class="note">到 fanyi-api.baidu.com 注册并开通通用翻译 API，在管理控制台查看 APP ID 和密钥。未认证每月 5 万字符免费；做个人实名认证升高级版后每月 100 万字符免费。</p>
       </template>
 
       <template v-if="showMicrosoft">

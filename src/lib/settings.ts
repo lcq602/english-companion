@@ -1,5 +1,5 @@
 // English Companion 设置（本地保存，不上传；密钥只存本机 WebView 本地存储，从不写入日志）。
-export type ProviderId = "tencent" | "google" | "microsoft" | "mymemory" | "libre";
+export type ProviderId = "tencent" | "google" | "microsoft" | "mymemory" | "libre" | "baidu" | "volcano";
 
 export type AppSettings = {
   // 翻译服务
@@ -13,6 +13,11 @@ export type AppSettings = {
   libreUrl: string;
   libreKey: string;
   mymemoryEmail: string;
+  baiduAppId: string;
+  baiduKey: string;
+  volcanoAccessKey: string;
+  volcanoSecretKey: string;
+  volcanoRegion: string;
   timeoutSecs: number;
   // 显示窗
   alwaysOnTop: boolean;
@@ -32,6 +37,11 @@ export const DEFAULT_SETTINGS: AppSettings = {
   libreUrl: "https://libretranslate.com",
   libreKey: "",
   mymemoryEmail: "",
+  baiduAppId: "",
+  baiduKey: "",
+  volcanoAccessKey: "",
+  volcanoSecretKey: "",
+  volcanoRegion: "cn-north-1",
   timeoutSecs: 10,
   alwaysOnTop: true,
   opacity: 0.92,
@@ -68,6 +78,11 @@ export function toProviderConfig(settings: AppSettings) {
     tencent_secret_id: settings.tencentSecretId,
     tencent_secret_key: settings.tencentSecretKey,
     tencent_region: settings.tencentRegion,
+    baidu_app_id: settings.baiduAppId,
+    baidu_key: settings.baiduKey,
+    volcano_access_key: settings.volcanoAccessKey,
+    volcano_secret_key: settings.volcanoSecretKey,
+    volcano_region: settings.volcanoRegion,
   };
 }
 
@@ -77,4 +92,6 @@ export const PROVIDER_NOTES: Record<ProviderId, string> = {
   microsoft: "官方 API。需自备 Azure Translator Key；免费 F0 额度每月 200 万字符。",
   mymemory: "免费服务。匿名约 1000 词/天；设置里填写邮箱可提升到约 10000 词/天。",
   libre: "开源可自建。填自建服务地址即可免 Key 使用；官方公共站现需付费 Key。",
+  baidu: "百度翻译开放平台：国内直连、速度快。需在 fanyi-api.baidu.com 注册拿 APP ID + 密钥；未认证每月 5 万字符免费，个人实名认证升高级版后每月 100 万字符免费，超出 49 元/百万字符。",
+  volcano: "火山引擎机器翻译（字节跳动）：国内直连、速度快。需在火山引擎控制台开通机器翻译并创建 AccessKey；每月前 200 万字符免费，超出约 49 元/百万字符，免费额度是目前最慷慨的。",
 };
