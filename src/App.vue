@@ -6,7 +6,7 @@ import { computed, onMounted, onUnmounted, ref } from "vue";
 import { getCurrentWindow, PhysicalPosition } from "@tauri-apps/api/window";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import WordDetailCard from "./components/WordDetailCard.vue";
-import { loadSettings, saveSettings, type AppSettings } from "./lib/settings";
+import { loadSettings, saveSettings, textColorOf, type AppSettings } from "./lib/settings";
 import {
   addFavorite, copyText, isTauri, lookupWord, openSettingsWindow, setClickThrough,
   speak, syncMonitorConfig, translateText, type WordDetail,
@@ -14,7 +14,6 @@ import {
 import { isMostlyEnglish, splitWords } from "./lib/words";
 import "./styles.css";
 
-const DEBOUNCE_MS = 800;
 const POS_KEY = "english-companion.window-pos";
 
 const settings = ref<AppSettings>(loadSettings());
@@ -38,6 +37,7 @@ let debounceTimer: number | undefined;
 const unlisteners: UnlistenFn[] = [];
 
 const resultTokens = computed(() => (result.value && isMostlyEnglish(result.value) ? splitWords(result.value) : null));
+const displayColor = computed(() => textColorOf(settings.value));
 
 async function runTranslate(text: string) {
   const id = ++requestId;
@@ -63,9 +63,10 @@ function onIncomingText(text: string) {
   if (!trimmed) return;
   pendingText = trimmed;
   window.clearTimeout(debounceTimer);
+  const delay = Math.min(5000, Math.max(0, settings.value.debounceMs || 0));
   debounceTimer = window.setTimeout(() => {
     if (pendingText && pendingText !== lastTranslatedText) void runTranslate(pendingText);
-  }, DEBOUNCE_MS);
+  }, delay);
 }
 
 async function copyResult() {
@@ -167,10 +168,18 @@ onUnmounted(() => {
 </script>
 
 <template>
-  <main class="desktop-stage display-only" :style="{ '--card-opacity': settings.opacity }">
+  <main
+    class="desktop-stage display-only"
+    :style="{
+      '--card-opacity': settings.opacity,
+      '--display-color': displayColor.color,
+      '--display-stroke': displayColor.stroke,
+    }"
+  >
     <section
       class="translation-card display-card"
-      :class="{ 'is-through': clickThrough }"
+      :class="{ 'is-through': clickThrough, 'has-outline': settings.textOutline }"
+      :style="{ opacity: settings.opacity }"
       @mousedown="startDragging"
     >
       <div class="hover-controls" @mousedown.stop>
@@ -187,6 +196,7 @@ onUnmounted(() => {
       </div>
 
       <div class="display-body" aria-live="polite">
+        <!-- 默认空白：没有译文时什么都不显示；只有报错才出字，方便定位问题 -->
         <p v-if="error" class="error-message">{{ error }}</p>
         <p v-else-if="resultTokens" class="result-text big">
           <template v-for="(token, i) in resultTokens" :key="i">
@@ -195,8 +205,6 @@ onUnmounted(() => {
           </template>
         </p>
         <p v-else-if="result" class="result-text big">{{ result }}</p>
-        <p v-else-if="status === 'loading'" class="idle-hint">翻译中…</p>
-        <p v-else class="idle-hint">{{ paused ? "监听已暂停（Ctrl+Shift+P 恢复）" : "在任意输入框打字，这里显示译文" }}</p>
       </div>
 
       <div v-if="result && !error" class="hover-footer" @mousedown.stop>

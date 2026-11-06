@@ -172,3 +172,38 @@ body.settings-body { background: #171a21; }
   opacity: 0; transition: opacity 0.15s ease;
 }
 .display-card:hover .hover-footer { opacity: 1; }
+
+/* ---------- v1.5: 纯透明显示块（无底色、无描边、无阴影） ---------- */
+.display-card {
+  background: transparent !important;
+  border: none !important;
+  box-shadow: none !important;
+  backdrop-filter: none !important;
+  -webkit-backdrop-filter: none !important;
+  border-radius: 0;
+  overflow: visible;
+}
+.display-card.is-through { outline: none; }
+.display-card .result-text { color: var(--display-color, #FFE93C); }
+.display-card .word-token { color: inherit; }
+.display-card.has-outline .result-text {
+  text-shadow:
+    1px 0 0 var(--display-stroke, rgba(0,0,0,.72)),
+    -1px 0 0 var(--display-stroke, rgba(0,0,0,.72)),
+    0 1px 0 var(--display-stroke, rgba(0,0,0,.72)),
+    0 -1px 0 var(--display-stroke, rgba(0,0,0,.72)),
+    0 2px 10px var(--display-stroke, rgba(0,0,0,.72));
+}
+.display-card .error-message {
+  color: #FF7A7A;
+  text-shadow: 0 1px 6px rgba(0,0,0,.8);
+}
+.display-card .provider-label { color: var(--display-color, #FFE93C); opacity: .85; }
+.color-preview { display: flex; border-radius: 8px; overflow: hidden; border: 1px solid rgba(255,255,255,0.14); }
+.preview-half { flex: 1; padding: 10px 12px; font-size: 15px; font-weight: 600; }
+.preview-half.dark-bg { background: #20242c; }
+.preview-half.light-bg { background: #e8ebf0; }
+.settings-section textarea {
+  background: rgba(255,255,255,0.07); border: 1px solid rgba(255,255,255,0.16); color: #eceef4;
+  border-radius: 8px; padding: 8px 10px; font: inherit; font-size: 13px; resize: vertical;
+}

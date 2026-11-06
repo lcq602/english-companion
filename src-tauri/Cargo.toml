@@ -1,6 +1,6 @@
 [package]
 name = "english-companion"
-version = "1.4.0"
+version = "1.5.0"
 description = "English Companion - Windows desktop real-time translation companion (free machine translation, no LLM)"
 authors = ["lcq602"]
 edition = "2021"

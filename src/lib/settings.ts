@@ -32,7 +32,25 @@ export type AppSettings = {
   clipboardEnabled: boolean;
   uiaEnabled: boolean;
   blacklist: string; // 每行一个进程名片段
+  // 显示文字（v1.5：背景纯透明，文字用醒目高亮色 + 描边保证任何背景下看得清）
+  textColorId: string; // TEXT_COLORS 的 id
+  textOutline: boolean; // 文字描边/阴影
+  debounceMs: number; // 停止输入多久后触发翻译（毫秒）
 };
+
+/// 显示块文字颜色预设：都是高醒目色，stroke 是配套描边色（保证在任意背景上都明显）。
+export const TEXT_COLORS: { id: string; label: string; color: string; stroke: string }[] = [
+  { id: "yellow", label: "荧光黄", color: "#FFE93C", stroke: "rgba(0,0,0,0.72)" },
+  { id: "green", label: "荧光绿", color: "#76FF03", stroke: "rgba(0,0,0,0.72)" },
+  { id: "orange", label: "亮橙", color: "#FF9100", stroke: "rgba(0,0,0,0.72)" },
+  { id: "sky", label: "天蓝", color: "#40C4FF", stroke: "rgba(0,0,0,0.72)" },
+  { id: "white", label: "纯白", color: "#FFFFFF", stroke: "rgba(0,0,0,0.78)" },
+  { id: "black", label: "纯黑", color: "#141414", stroke: "rgba(255,255,255,0.85)" },
+];
+
+export function textColorOf(settings: AppSettings) {
+  return TEXT_COLORS.find((c) => c.id === settings.textColorId) ?? TEXT_COLORS[0];
+}
 
 export const DEFAULT_SETTINGS: AppSettings = {
   provider: "tencent",
@@ -62,6 +80,9 @@ export const DEFAULT_SETTINGS: AppSettings = {
   clipboardEnabled: true,
   uiaEnabled: true,
   blacklist: "1password\nkeepass\nbitwarden\nlastpass",
+  textColorId: "yellow",
+  textOutline: true,
+  debounceMs: 800,
 };
 
 const STORAGE_KEY = "english-companion.settings.v1";

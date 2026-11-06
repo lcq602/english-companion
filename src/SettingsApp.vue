@@ -4,7 +4,7 @@
 import { computed, onMounted, ref } from "vue";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { emit } from "@tauri-apps/api/event";
-import { loadSettings, saveSettings, PROVIDER_NOTES, type AppSettings, type ProviderId } from "./lib/settings";
+import { loadSettings, saveSettings, PROVIDER_NOTES, TEXT_COLORS, textColorOf, type AppSettings, type ProviderId } from "./lib/settings";
 import {
   clearHistory, deleteHistory, isTauri, listFavorites, listHistory, moveMainWindow,
   moveMainWindowPreset, removeFavorite, speak, syncMonitorConfig,
@@ -41,6 +41,14 @@ async function save() {
   savedHint.value = "已保存，主窗口即时生效";
   window.setTimeout(() => (savedHint.value = ""), 2000);
 }
+
+const previewColor = computed(() => textColorOf(draft.value));
+const previewStyle = computed(() => ({
+  color: previewColor.value.color,
+  textShadow: draft.value.textOutline
+    ? `1px 0 0 ${previewColor.value.stroke}, -1px 0 0 ${previewColor.value.stroke}, 0 1px 0 ${previewColor.value.stroke}, 0 -1px 0 ${previewColor.value.stroke}, 0 2px 10px ${previewColor.value.stroke}`
+    : "none",
+}));
 
 // 显示位置（与主窗口共用 localStorage 里的保存位置）
 const POS_KEY = "english-companion.window-pos";
@@ -196,13 +204,30 @@ onMounted(async () => {
     </section>
 
     <section v-else-if="tab === 'display'" class="settings-section">
-      <label>
-        透明度：{{ Math.round(draft.opacity * 100) }}%
-        <input v-model.number="draft.opacity" type="range" min="0.35" max="1" step="0.01" />
-      </label>
       <label class="switch-row"><input v-model="draft.alwaysOnTop" type="checkbox" /><span>始终置顶</span></label>
       <label class="switch-row"><input v-model="draft.lockPosition" type="checkbox" /><span>固定位置（主窗口不可拖动）</span></label>
       <label class="switch-row"><input v-model="draft.clickThroughOnStart" type="checkbox" /><span>启动时开启点击穿透（点击落到后面的窗口；用 Ctrl+Shift+C 或托盘菜单关闭）</span></label>
+
+      <h3>文字与触发</h3>
+      <label>
+        翻译触发延时：{{ draft.debounceMs }} 毫秒（停止输入多久后开始翻译；0 = 立即）
+        <input v-model.number="draft.debounceMs" type="range" min="0" max="3000" step="50" />
+      </label>
+      <label>
+        文字颜色（背景是纯透明的，用醒目颜色保证看得清）
+        <select v-model="draft.textColorId">
+          <option v-for="c in TEXT_COLORS" :key="c.id" :value="c.id">{{ c.label }}</option>
+        </select>
+      </label>
+      <div class="color-preview">
+        <span class="preview-half dark-bg" :style="previewStyle">翻译结果预览 Abc</span>
+        <span class="preview-half light-bg" :style="previewStyle">翻译结果预览 Abc</span>
+      </div>
+      <label class="switch-row"><input v-model="draft.textOutline" type="checkbox" /><span>文字描边（在任何背景上都醒目，建议开）</span></label>
+      <label>
+        整体不透明度：{{ Math.round(draft.opacity * 100) }}%（只影响文字淡浓，背景始终纯透明）
+        <input v-model.number="draft.opacity" type="range" min="0.35" max="1" step="0.01" />
+      </label>
 
       <h3>显示位置</h3>
       <div class="settings-row-actions">
