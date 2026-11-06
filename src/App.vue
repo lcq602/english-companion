@@ -1,14 +1,15 @@
 <script setup lang="ts">
-// 主窗口：极简透明「显示屏」。只有手动文字翻译（输入/粘贴 -> 停顿 0.8 秒出译文），
-// 没有自动监听。配置在独立窗口（open_settings）。支持点击穿透与位置固定。
-import { computed, onMounted, onUnmounted, ref, watch } from "vue";
+// 主窗口：纯显示块。没有输入框——文本来自 UIA 读取当前焦点输入框 / 剪贴板监听
+// （Rust monitor 线程发 companion-text 事件），这里只负责防抖翻译并展示译文。
+// 全透明小块；控件只在悬停时浮现；位置可在配置窗口里设定，也可直接拖动。
+import { computed, onMounted, onUnmounted, ref } from "vue";
 import { getCurrentWindow, PhysicalPosition } from "@tauri-apps/api/window";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import WordDetailCard from "./components/WordDetailCard.vue";
 import { loadSettings, saveSettings, type AppSettings } from "./lib/settings";
 import {
   addFavorite, copyText, isTauri, lookupWord, openSettingsWindow, setClickThrough,
-  speak, translateText, type WordDetail,
+  speak, syncMonitorConfig, translateText, type WordDetail,
 } from "./lib/api";
 import { isMostlyEnglish, splitWords } from "./lib/words";
 import "./styles.css";
@@ -17,7 +18,6 @@ const DEBOUNCE_MS = 800;
 const POS_KEY = "english-companion.window-pos";
 
 const settings = ref<AppSettings>(loadSettings());
-const input = ref("");
 const result = ref("");
 const status = ref<"idle" | "loading" | "success" | "error">("idle");
 const error = ref("");
@@ -25,13 +25,15 @@ const providerName = ref("");
 const fromCache = ref(false);
 const copied = ref(false);
 const clickThrough = ref(false);
+const paused = ref(settings.value.paused);
 
 const wordDetail = ref<WordDetail | null>(null);
 const wordLoading = ref(false);
 const wordError = ref("");
 
 let requestId = 0;
-let lastRequestedText = "";
+let lastTranslatedText = "";
+let pendingText = "";
 let debounceTimer: number | undefined;
 const unlisteners: UnlistenFn[] = [];
 
@@ -47,6 +49,7 @@ async function runTranslate(text: string) {
     result.value = response.translated_text;
     providerName.value = response.provider_name;
     fromCache.value = response.from_cache;
+    lastTranslatedText = text;
     status.value = "success";
   } catch (e) {
     if (id !== requestId) return;
@@ -55,30 +58,14 @@ async function runTranslate(text: string) {
   }
 }
 
-watch(input, (value) => {
-  const text = value.trim();
+function onIncomingText(text: string) {
+  const trimmed = text.trim();
+  if (!trimmed) return;
+  pendingText = trimmed;
   window.clearTimeout(debounceTimer);
-  if (!text) {
-    requestId += 1;
-    lastRequestedText = "";
-    result.value = "";
-    error.value = "";
-    status.value = "idle";
-    return;
-  }
-  if (text === lastRequestedText && status.value === "success") return;
   debounceTimer = window.setTimeout(() => {
-    if (text === lastRequestedText && status.value === "success") return;
-    lastRequestedText = text;
-    void runTranslate(text);
+    if (pendingText && pendingText !== lastTranslatedText) void runTranslate(pendingText);
   }, DEBOUNCE_MS);
-});
-
-function clearAll() {
-  requestId += 1;
-  lastRequestedText = "";
-  input.value = "";
-  wordDetail.value = null;
 }
 
 async function copyResult() {
@@ -110,6 +97,13 @@ async function toggleClickThrough() {
   clickThrough.value = await setClickThrough(next).catch(() => next);
 }
 
+async function togglePause() {
+  paused.value = !paused.value;
+  settings.value = { ...settings.value, paused: paused.value };
+  saveSettings(settings.value);
+  await syncMonitorConfig(settings.value).catch(() => undefined);
+}
+
 function toggleLock() {
   settings.value = { ...settings.value, lockPosition: !settings.value.lockPosition };
   saveSettings(settings.value);
@@ -119,7 +113,7 @@ const win = () => (isTauri() ? getCurrentWindow() : null);
 function hideWindow() { void win()?.hide().catch(() => undefined); }
 function closeWindow() { void win()?.close().catch(() => undefined); }
 function startDragging(event: MouseEvent) {
-  if (settings.value.lockPosition) return; // 位置已固定
+  if (settings.value.lockPosition) return;
   if (event.button !== 0) return;
   if ((event.target as HTMLElement).closest("button")) return;
   void win()?.startDragging().catch(() => undefined);
@@ -131,11 +125,11 @@ async function applyWindowSettings() {
 }
 
 onMounted(async () => {
+  await syncMonitorConfig(settings.value).catch(() => undefined);
   await applyWindowSettings();
   if (!isTauri()) return;
   const window = getCurrentWindow();
 
-  // 恢复上次位置（默认由 Rust 定位到屏幕右侧）
   try {
     const saved = JSON.parse(localStorage.getItem(POS_KEY) ?? "null") as { x: number; y: number } | null;
     if (saved) await window.setPosition(new PhysicalPosition(saved.x, saved.y));
@@ -148,15 +142,20 @@ onMounted(async () => {
     clickThrough.value = await setClickThrough(true).catch(() => false);
   }
 
-  unlisteners.push(await listen<{ text: string; source: string }>("companion-text", (event) => {
-    const text = event.payload.text.trim();
-    if (text && text !== input.value.trim()) input.value = text;
+  unlisteners.push(await listen<{ text: string; source: string; app: string }>("companion-text", (event) => {
+    onIncomingText(event.payload.text);
   }));
   unlisteners.push(await listen<boolean>("clickthrough-changed", (event) => {
     clickThrough.value = event.payload;
   }));
+  unlisteners.push(await listen<boolean>("monitor-paused-changed", (event) => {
+    paused.value = event.payload;
+    settings.value = { ...settings.value, paused: event.payload };
+    saveSettings(settings.value);
+  }));
   unlisteners.push(await listen<AppSettings>("settings-changed", (event) => {
     settings.value = { ...loadSettings(), ...event.payload };
+    paused.value = settings.value.paused;
     void applyWindowSettings();
   }));
 });
@@ -168,46 +167,44 @@ onUnmounted(() => {
 </script>
 
 <template>
-  <main class="desktop-stage" :style="{ '--card-opacity': settings.opacity }">
-    <section class="translation-card" :class="{ 'is-through': clickThrough }">
-      <header class="card-header" data-tauri-drag-region @mousedown="startDragging">
-        <div class="brand-mark">译</div>
-        <span v-if="clickThrough" class="through-badge">点击穿透中 · Ctrl+Shift+C 关闭</span>
-        <div class="window-actions" @mousedown.stop>
-          <button class="window-button" type="button" @click="toggleClickThrough" :title="clickThrough ? '关闭点击穿透' : '开启点击穿透（点击落到后面的窗口）'">👆</button>
+  <main class="desktop-stage display-only" :style="{ '--card-opacity': settings.opacity }">
+    <section
+      class="translation-card display-card"
+      :class="{ 'is-through': clickThrough }"
+      @mousedown="startDragging"
+    >
+      <div class="hover-controls" @mousedown.stop>
+        <span v-if="clickThrough" class="through-badge">穿透中 · Ctrl+Shift+C 关</span>
+        <span v-else-if="paused" class="through-badge">已暂停监听</span>
+        <span class="hover-buttons">
+          <button class="window-button" type="button" @click="togglePause" :title="paused ? '恢复监听' : '暂停监听'">{{ paused ? "▶" : "⏸" }}</button>
+          <button class="window-button" type="button" @click="toggleClickThrough" title="点击穿透开关">👆</button>
           <button class="window-button" type="button" @click="toggleLock" :title="settings.lockPosition ? '位置已固定，点击解锁' : '固定窗口位置'">{{ settings.lockPosition ? "🔒" : "📌" }}</button>
           <button class="window-button" type="button" @click="openSettingsWindow" title="打开配置（独立窗口）">⚙</button>
           <button class="window-button" type="button" @click="hideWindow" title="隐藏 (Ctrl+Shift+H)">▽</button>
           <button class="window-button close-button" type="button" @click="closeWindow" title="关闭">×</button>
-        </div>
-      </header>
+        </span>
+      </div>
 
-      <textarea
-        v-model="input"
-        class="display-input"
-        placeholder="输入或粘贴文字，停顿 0.8 秒自动翻译…"
-        rows="2"
-      />
-
-      <div class="display-result" aria-live="polite">
-        <div class="compact-heading">
-          <span class="status-indicator" :data-status="status" />
-          <span v-if="status === 'loading'" class="loading-mark">翻译中…</span>
-          <span v-else-if="providerName" class="provider-label">{{ providerName }}{{ fromCache ? " · 缓存" : "" }}</span>
-          <span class="result-actions" v-if="result">
-            <button class="mini-button" type="button" @click="copyResult">{{ copied ? "已复制" : "复制" }}</button>
-            <button class="mini-button" type="button" @click="speak(result)">🔊</button>
-            <button class="mini-button" type="button" @click="clearAll">清空</button>
-          </span>
-        </div>
+      <div class="display-body" aria-live="polite">
         <p v-if="error" class="error-message">{{ error }}</p>
-        <p v-else-if="resultTokens" class="result-text">
+        <p v-else-if="resultTokens" class="result-text big">
           <template v-for="(token, i) in resultTokens" :key="i">
             <button v-if="token.isWord" class="word-token" type="button" @click="onWordClick(token.text)" title="点击查释义">{{ token.text }}</button>
             <span v-else>{{ token.text }}</span>
           </template>
         </p>
-        <p v-else-if="result" class="result-text">{{ result }}</p>
+        <p v-else-if="result" class="result-text big">{{ result }}</p>
+        <p v-else-if="status === 'loading'" class="idle-hint">翻译中…</p>
+        <p v-else class="idle-hint">{{ paused ? "监听已暂停（Ctrl+Shift+P 恢复）" : "在任意输入框打字，这里显示译文" }}</p>
+      </div>
+
+      <div v-if="result && !error" class="hover-footer" @mousedown.stop>
+        <span class="provider-label">{{ providerName }}{{ fromCache ? " · 缓存" : "" }}</span>
+        <span class="result-actions">
+          <button class="mini-button" type="button" @click="copyResult">{{ copied ? "已复制" : "复制" }}</button>
+          <button class="mini-button" type="button" @click="speak(result)">🔊</button>
+        </span>
       </div>
 
       <WordDetailCard

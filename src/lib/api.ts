@@ -1,6 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import type { AppSettings } from "./settings";
-import { toProviderConfig } from "./settings";
+import { blacklistList, toProviderConfig } from "./settings";
 
 export type TranslateResponse = {
   translated_text: string;
@@ -82,6 +82,26 @@ export async function copyText(text: string): Promise<void> {
   } else {
     await navigator.clipboard.writeText(text);
   }
+}
+
+export async function syncMonitorConfig(settings: AppSettings): Promise<void> {
+  if (!isTauri()) return;
+  await invoke("set_monitor_config", {
+    config: {
+      paused: settings.paused,
+      clipboard_enabled: settings.clipboardEnabled,
+      uia_enabled: settings.uiaEnabled,
+      blacklist: blacklistList(settings),
+    },
+  });
+}
+
+export async function moveMainWindow(x: number, y: number): Promise<void> {
+  if (isTauri()) await invoke("move_main_window", { x, y });
+}
+
+export async function moveMainWindowPreset(preset: string): Promise<void> {
+  if (isTauri()) await invoke("move_main_window_preset", { preset });
 }
 
 export async function openSettingsWindow(): Promise<void> {

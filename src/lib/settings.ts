@@ -27,6 +27,11 @@ export type AppSettings = {
   opacity: number; // 0.35 - 1，透明显示窗的不透明度
   lockPosition: boolean; // 固定位置（禁止拖动）
   clickThroughOnStart: boolean; // 启动时开启点击穿透
+  // 监听（v1.4 恢复：主显示窗没有输入框，文本靠读焦点输入框/剪贴板获得）
+  paused: boolean;
+  clipboardEnabled: boolean;
+  uiaEnabled: boolean;
+  blacklist: string; // 每行一个进程名片段
 };
 
 export const DEFAULT_SETTINGS: AppSettings = {
@@ -53,6 +58,10 @@ export const DEFAULT_SETTINGS: AppSettings = {
   opacity: 0.92,
   lockPosition: false,
   clickThroughOnStart: false,
+  paused: false,
+  clipboardEnabled: true,
+  uiaEnabled: true,
+  blacklist: "1password\nkeepass\nbitwarden\nlastpass",
 };
 
 const STORAGE_KEY = "english-companion.settings.v1";
@@ -93,6 +102,13 @@ export function toProviderConfig(settings: AppSettings) {
     apps_script_token: settings.appsScriptToken,
     apps_script_proxy: settings.appsScriptProxy,
   };
+}
+
+export function blacklistList(settings: AppSettings): string[] {
+  return settings.blacklist
+    .split(/\r?\n/)
+    .map((line) => line.trim().toLowerCase())
+    .filter(Boolean);
 }
 
 export const PROVIDER_NOTES: Record<ProviderId, string> = {

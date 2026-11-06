@@ -6,7 +6,8 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import { emit } from "@tauri-apps/api/event";
 import { loadSettings, saveSettings, PROVIDER_NOTES, type AppSettings, type ProviderId } from "./lib/settings";
 import {
-  clearHistory, deleteHistory, isTauri, listFavorites, listHistory, removeFavorite, speak,
+  clearHistory, deleteHistory, isTauri, listFavorites, listHistory, moveMainWindow,
+  moveMainWindowPreset, removeFavorite, speak, syncMonitorConfig,
   type FavoriteWord, type HistoryItem,
 } from "./lib/api";
 import "./styles.css";
@@ -35,9 +36,29 @@ const showAppsScript = computed(() => draft.value.provider === "appsscript" || d
 
 async function save() {
   saveSettings(draft.value);
+  await syncMonitorConfig(draft.value).catch(() => undefined);
   if (isTauri()) await emit("settings-changed", { ...draft.value }).catch(() => undefined);
   savedHint.value = "已保存，主窗口即时生效";
   window.setTimeout(() => (savedHint.value = ""), 2000);
+}
+
+// 显示位置（与主窗口共用 localStorage 里的保存位置）
+const POS_KEY = "english-companion.window-pos";
+const posX = ref(0);
+const posY = ref(0);
+function loadSavedPos() {
+  try {
+    const saved = JSON.parse(localStorage.getItem(POS_KEY) ?? "null") as { x: number; y: number } | null;
+    if (saved) { posX.value = saved.x; posY.value = saved.y; }
+  } catch { /* 忽略 */ }
+}
+async function applyPreset(preset: string) {
+  await moveMainWindowPreset(preset).catch(() => undefined);
+  window.setTimeout(loadSavedPos, 350);
+}
+async function applyXY() {
+  await moveMainWindow(Math.round(posX.value) || 0, Math.round(posY.value) || 0).catch(() => undefined);
+  window.setTimeout(loadSavedPos, 350);
 }
 
 async function closeWindow() {
@@ -74,6 +95,7 @@ async function onRemoveFavorite(word: string) { await removeFavorite(word).catch
 
 onMounted(async () => {
   document.body.classList.add("settings-body");
+  loadSavedPos();
   await refreshHistory();
   await refreshFavorites();
   if (isTauri()) {
@@ -98,7 +120,7 @@ onMounted(async () => {
 
     <nav class="settings-tabs">
       <button type="button" :class="{ active: tab === 'service' }" @click="tab = 'service'">翻译服务</button>
-      <button type="button" :class="{ active: tab === 'display' }" @click="tab = 'display'">显示窗口</button>
+      <button type="button" :class="{ active: tab === 'display' }" @click="tab = 'display'">显示与监听</button>
       <button type="button" :class="{ active: tab === 'history' }" @click="tab = 'history'; refreshHistory()">历史与复习</button>
       <button type="button" :class="{ active: tab === 'words' }" @click="tab = 'words'; refreshFavorites()">收藏单词</button>
     </nav>
@@ -181,7 +203,32 @@ onMounted(async () => {
       <label class="switch-row"><input v-model="draft.alwaysOnTop" type="checkbox" /><span>始终置顶</span></label>
       <label class="switch-row"><input v-model="draft.lockPosition" type="checkbox" /><span>固定位置（主窗口不可拖动）</span></label>
       <label class="switch-row"><input v-model="draft.clickThroughOnStart" type="checkbox" /><span>启动时开启点击穿透（点击落到后面的窗口；用 Ctrl+Shift+C 或托盘菜单关闭）</span></label>
-      <p class="note">快捷键：Ctrl+Shift+T 把剪贴板文本送入翻译 · Ctrl+Shift+H 显示/隐藏 · Ctrl+Shift+C 点击穿透开关。</p>
+
+      <h3>显示位置</h3>
+      <div class="settings-row-actions">
+        <button class="secondary-button" type="button" @click="applyPreset('top-right')">右上角</button>
+        <button class="secondary-button" type="button" @click="applyPreset('top-left')">左上角</button>
+        <button class="secondary-button" type="button" @click="applyPreset('bottom-right')">右下角</button>
+        <button class="secondary-button" type="button" @click="applyPreset('bottom-left')">左下角</button>
+        <button class="secondary-button" type="button" @click="applyPreset('center')">居中</button>
+      </div>
+      <div class="settings-row-actions">
+        <label>X<input v-model.number="posX" type="number" style="width:90px" /></label>
+        <label>Y<input v-model.number="posY" type="number" style="width:90px" /></label>
+        <button class="secondary-button" type="button" @click="applyXY">移动到此坐标</button>
+        <button class="secondary-button" type="button" @click="loadSavedPos">读取当前</button>
+      </div>
+      <p class="note">也可以直接拖动主显示块来挪位置（位置已固定时先取消上面的勾）；位置会自动记住。</p>
+
+      <h3>监听（文字来源）</h3>
+      <label class="switch-row"><input v-model="draft.paused" type="checkbox" /><span>暂停监听</span></label>
+      <label class="switch-row"><input v-model="draft.uiaEnabled" type="checkbox" /><span>读取当前输入框内容（在别的软件打字时自动翻译；密码框绝不读取）</span></label>
+      <label class="switch-row"><input v-model="draft.clipboardEnabled" type="checkbox" /><span>剪贴板变化时自动翻译</span></label>
+      <label>
+        应用黑名单（每行一个进程名片段，命中的软件不读取）
+        <textarea v-model="draft.blacklist" rows="3" />
+      </label>
+      <p class="note">快捷键：Ctrl+Shift+T 剪贴板送翻译 · Ctrl+Shift+H 显示/隐藏 · Ctrl+Shift+C 点击穿透 · Ctrl+Shift+P 暂停/恢复监听。</p>
     </section>
 
     <section v-else-if="tab === 'history'" class="settings-section">

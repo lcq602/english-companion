@@ -153,3 +153,22 @@ body.settings-body { background: #171a21; }
 .review-card.dark { background: rgba(255,255,255,0.06); border-color: rgba(255,255,255,0.12); color: #eceef4; }
 .window-button.dark { color: #c6ccd8; }
 .word-item.dark .word-meaning { color: #c6ccd8; }
+
+/* ---------- v1.4: 纯显示块 ---------- */
+.display-card { position: relative; cursor: grab; }
+.display-card:active { cursor: grabbing; }
+.hover-controls {
+  position: absolute; top: 2px; right: 4px; left: 8px;
+  display: flex; align-items: center; justify-content: space-between; gap: 8px;
+  opacity: 0; transition: opacity 0.15s ease; pointer-events: none;
+}
+.display-card:hover .hover-controls { opacity: 1; pointer-events: auto; }
+.hover-buttons { display: inline-flex; gap: 2px; margin-left: auto; }
+.display-body { padding: 10px 4px 4px; min-height: 44px; }
+.result-text.big { font-size: 17px; line-height: 1.55; }
+.idle-hint { color: var(--muted); font-size: 13px; margin: 0; }
+.hover-footer {
+  display: flex; align-items: center; justify-content: space-between; gap: 8px;
+  opacity: 0; transition: opacity 0.15s ease;
+}
+.display-card:hover .hover-footer { opacity: 1; }
