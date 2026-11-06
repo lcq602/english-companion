@@ -8,6 +8,10 @@ on:
     tags: ["v*"]
   workflow_dispatch:
 
+# 发布 Release 需要给 GITHUB_TOKEN 写权限（仓库默认只读时 gh release 会 403）
+permissions:
+  contents: write
+
 jobs:
   test-and-build:
     runs-on: windows-2022
