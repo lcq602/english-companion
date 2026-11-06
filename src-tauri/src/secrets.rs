@@ -66,7 +66,7 @@ fn dpapi(input: &[u8], encrypt: bool) -> Result<Vec<u8>, String> {
         let result = if encrypt {
             CryptProtectData(
                 &input_blob,
-                windows_core::PCWSTR::null(),
+                windows::core::PCWSTR::null(),
                 Some(&entropy_blob),
                 None,
                 None,
