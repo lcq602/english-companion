@@ -224,10 +224,6 @@ onMounted(async () => {
         <span class="preview-half light-bg" :style="previewStyle">翻译结果预览 Abc</span>
       </div>
       <label class="switch-row"><input v-model="draft.textOutline" type="checkbox" /><span>文字描边（在任何背景上都醒目，建议开）</span></label>
-      <label>
-        整体不透明度：{{ Math.round(draft.opacity * 100) }}%（只影响文字淡浓，背景始终纯透明）
-        <input v-model.number="draft.opacity" type="range" min="0.35" max="1" step="0.01" />
-      </label>
 
       <h3>显示位置</h3>
       <div class="settings-row-actions">

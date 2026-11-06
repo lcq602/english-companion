@@ -8,8 +8,8 @@ import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import WordDetailCard from "./components/WordDetailCard.vue";
 import { loadSettings, saveSettings, textColorOf, type AppSettings } from "./lib/settings";
 import {
-  addFavorite, copyText, isTauri, lookupWord, openSettingsWindow, setClickThrough,
-  speak, syncMonitorConfig, translateText, type WordDetail,
+  addFavorite, isTauri, lookupWord, openSettingsWindow, setClickThrough,
+  syncMonitorConfig, translateText, type WordDetail,
 } from "./lib/api";
 import { isMostlyEnglish, splitWords } from "./lib/words";
 import "./styles.css";
@@ -22,7 +22,6 @@ const status = ref<"idle" | "loading" | "success" | "error">("idle");
 const error = ref("");
 const providerName = ref("");
 const fromCache = ref(false);
-const copied = ref(false);
 const clickThrough = ref(false);
 const paused = ref(settings.value.paused);
 
@@ -67,13 +66,6 @@ function onIncomingText(text: string) {
   debounceTimer = window.setTimeout(() => {
     if (pendingText && pendingText !== lastTranslatedText) void runTranslate(pendingText);
   }, delay);
-}
-
-async function copyResult() {
-  if (!result.value) return;
-  await copyText(result.value).catch(() => undefined);
-  copied.value = true;
-  window.setTimeout(() => (copied.value = false), 1400);
 }
 
 async function onWordClick(word: string) {
@@ -179,12 +171,9 @@ onUnmounted(() => {
     <section
       class="translation-card display-card"
       :class="{ 'is-through': clickThrough, 'has-outline': settings.textOutline }"
-      :style="{ opacity: settings.opacity }"
       @mousedown="startDragging"
     >
       <div class="hover-controls" @mousedown.stop>
-        <span v-if="clickThrough" class="through-badge">穿透中 · Ctrl+Shift+C 关</span>
-        <span v-else-if="paused" class="through-badge">已暂停监听</span>
         <span class="hover-buttons">
           <button class="window-button" type="button" @click="togglePause" :title="paused ? '恢复监听' : '暂停监听'">{{ paused ? "▶" : "⏸" }}</button>
           <button class="window-button" type="button" @click="toggleClickThrough" title="点击穿透开关">👆</button>
@@ -205,14 +194,6 @@ onUnmounted(() => {
           </template>
         </p>
         <p v-else-if="result" class="result-text big">{{ result }}</p>
-      </div>
-
-      <div v-if="result && !error" class="hover-footer" @mousedown.stop>
-        <span class="provider-label">{{ providerName }}{{ fromCache ? " · 缓存" : "" }}</span>
-        <span class="result-actions">
-          <button class="mini-button" type="button" @click="copyResult">{{ copied ? "已复制" : "复制" }}</button>
-          <button class="mini-button" type="button" @click="speak(result)">🔊</button>
-        </span>
       </div>
 
       <WordDetailCard

@@ -207,3 +207,18 @@ body.settings-body { background: #171a21; }
   background: rgba(255,255,255,0.07); border: 1px solid rgba(255,255,255,0.16); color: #eceef4;
   border-radius: 8px; padding: 8px 10px; font: inherit; font-size: 13px; resize: vertical;
 }
+
+/* ---------- v1.5.1: 文字强对比（粗描边光晕 + 加粗 + 全不透明） ---------- */
+.display-card .result-text.big { font-weight: 700; letter-spacing: 0.01em; }
+.display-card.has-outline .result-text {
+  -webkit-text-stroke: 6px var(--display-stroke, rgba(0,0,0,.72));
+  paint-order: stroke fill;
+  text-shadow: 0 2px 16px var(--display-stroke, rgba(0,0,0,.72)), 0 0 3px var(--display-stroke, rgba(0,0,0,.72));
+}
+.display-card.has-outline .error-message {
+  -webkit-text-stroke: 5px rgba(0,0,0,.68);
+  paint-order: stroke fill;
+  font-weight: 700;
+  color: #FF5252;
+  text-shadow: 0 2px 14px rgba(0,0,0,.68);
+}
