@@ -91,6 +91,7 @@ export async function syncMonitorConfig(settings: AppSettings): Promise<void> {
       paused: settings.paused,
       clipboard_enabled: settings.clipboardEnabled,
       uia_enabled: settings.uiaEnabled,
+      enter_only: settings.triggerMode === "enter",
       blacklist: blacklistList(settings),
     },
   });

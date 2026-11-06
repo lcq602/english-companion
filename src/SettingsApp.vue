@@ -210,8 +210,16 @@ onMounted(async () => {
 
       <h3>文字与触发</h3>
       <label>
-        翻译触发延时：{{ draft.debounceMs }} 毫秒（停止输入多久后开始翻译；0 = 立即）
-        <input v-model.number="draft.debounceMs" type="range" min="0" max="3000" step="50" />
+        触发方式
+        <select v-model="draft.triggerMode">
+          <option value="enter">按回车才翻译（在别的软件输入框写完，按回车触发）</option>
+          <option value="auto">自动翻译（停止输入后按下面的延时自动触发）</option>
+        </select>
+      </label>
+      <p v-if="draft.triggerMode === 'enter'" class="note">回车模式：打字时不会翻译，按回车才翻当前输入框的内容；不会拦截你的回车，密码框和本软件内按回车不触发。复制的文字不自动翻译，需要时按 Ctrl+Shift+T。按 Esc 可一键清空显示。</p>
+      <label>
+        翻译触发延时：{{ draft.debounceMs }} 毫秒（仅自动模式生效；0 = 立即）
+        <input v-model.number="draft.debounceMs" type="range" min="0" max="3000" step="50" :disabled="draft.triggerMode === 'enter'" />
       </label>
       <label>
         文字颜色（背景是纯透明的，用醒目颜色保证看得清）
@@ -243,13 +251,13 @@ onMounted(async () => {
 
       <h3>监听（文字来源）</h3>
       <label class="switch-row"><input v-model="draft.paused" type="checkbox" /><span>暂停监听</span></label>
-      <label class="switch-row"><input v-model="draft.uiaEnabled" type="checkbox" /><span>读取当前输入框内容（在别的软件打字时自动翻译；密码框绝不读取）</span></label>
-      <label class="switch-row"><input v-model="draft.clipboardEnabled" type="checkbox" /><span>剪贴板变化时自动翻译</span></label>
+      <label class="switch-row"><input v-model="draft.uiaEnabled" type="checkbox" /><span>读取当前输入框内容（密码框绝不读取；何时翻译由上面的触发方式决定）</span></label>
+      <label class="switch-row"><input v-model="draft.clipboardEnabled" type="checkbox" /><span>剪贴板变化时翻译（仅自动模式；回车模式下用 Ctrl+Shift+T 主动送译）</span></label>
       <label>
         应用黑名单（每行一个进程名片段，命中的软件不读取）
         <textarea v-model="draft.blacklist" rows="3" />
       </label>
-      <p class="note">快捷键：Ctrl+Shift+T 剪贴板送翻译 · Ctrl+Shift+H 显示/隐藏 · Ctrl+Shift+C 点击穿透 · Ctrl+Shift+P 暂停/恢复监听。</p>
+      <p class="note">快捷键：Enter 触发翻译（回车模式）· Esc 清空显示 · Ctrl+Shift+T 剪贴板送翻译 · Ctrl+Shift+H 显示/隐藏 · Ctrl+Shift+C 点击穿透 · Ctrl+Shift+P 暂停/恢复监听。</p>
     </section>
 
     <section v-else-if="tab === 'history'" class="settings-section">

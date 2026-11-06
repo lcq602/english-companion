@@ -264,6 +264,7 @@ pub struct MonitorConfig {
     pub paused: bool,
     pub clipboard_enabled: bool,
     pub uia_enabled: bool,
+    pub enter_only: bool,
     pub blacklist: Vec<String>,
 }
 
@@ -272,6 +273,7 @@ fn set_monitor_config(state: tauri::State<'_, AppState>, config: MonitorConfig) 
     state.monitor.paused.store(config.paused, Ordering::Relaxed);
     state.monitor.clipboard_enabled.store(config.clipboard_enabled, Ordering::Relaxed);
     state.monitor.uia_enabled.store(config.uia_enabled, Ordering::Relaxed);
+    state.monitor.enter_only.store(config.enter_only, Ordering::Relaxed);
     if let Ok(mut list) = state.monitor.blacklist.write() {
         *list = config.blacklist;
     }

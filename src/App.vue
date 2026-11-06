@@ -60,12 +60,34 @@ async function runTranslate(text: string) {
 function onIncomingText(text: string) {
   const trimmed = text.trim();
   if (!trimmed) return;
+  if (settings.value.triggerMode === "enter") {
+    // 回车模式下，事件只会在按下回车（或 Ctrl+Shift+T 主动送译）时到达，直接翻译。
+    if (trimmed !== lastTranslatedText) void runTranslate(trimmed);
+    return;
+  }
   pendingText = trimmed;
   window.clearTimeout(debounceTimer);
   const delay = Math.min(5000, Math.max(0, settings.value.debounceMs || 0));
   debounceTimer = window.setTimeout(() => {
     if (pendingText && pendingText !== lastTranslatedText) void runTranslate(pendingText);
   }, delay);
+}
+
+// Esc：一键清除——关单词卡、清掉译文和报错，显示块回到完全空白
+function clearDisplay() {
+  wordDetail.value = null;
+  wordError.value = "";
+  wordLoading.value = false;
+  result.value = "";
+  error.value = "";
+  status.value = "idle";
+  lastTranslatedText = "";
+  pendingText = "";
+  window.clearTimeout(debounceTimer);
+}
+
+function onGlobalKeydown(event: KeyboardEvent) {
+  if (event.key === "Escape") clearDisplay();
 }
 
 async function onWordClick(word: string) {
@@ -118,6 +140,7 @@ async function applyWindowSettings() {
 }
 
 onMounted(async () => {
+  globalThis.addEventListener("keydown", onGlobalKeydown);
   await syncMonitorConfig(settings.value).catch(() => undefined);
   await applyWindowSettings();
   if (!isTauri()) return;
@@ -138,6 +161,9 @@ onMounted(async () => {
   unlisteners.push(await listen<{ text: string; source: string; app: string }>("companion-text", (event) => {
     onIncomingText(event.payload.text);
   }));
+  unlisteners.push(await listen("clear-display", () => {
+    clearDisplay();
+  }));
   unlisteners.push(await listen<boolean>("clickthrough-changed", (event) => {
     clickThrough.value = event.payload;
   }));
@@ -154,6 +180,7 @@ onMounted(async () => {
 });
 
 onUnmounted(() => {
+  window.removeEventListener("keydown", onGlobalKeydown);
   window.clearTimeout(debounceTimer);
   unlisteners.forEach((fn) => fn());
 });
@@ -184,7 +211,7 @@ onUnmounted(() => {
         </span>
       </div>
 
-      <div class="display-body" aria-live="polite">
+      <div class="display-body" aria-live="polite" @click.self="wordDetail = null; wordError = ''">
         <!-- 默认空白：没有译文时什么都不显示；只有报错才出字，方便定位问题 -->
         <p v-if="error" class="error-message">{{ error }}</p>
         <p v-else-if="resultTokens" class="result-text big">

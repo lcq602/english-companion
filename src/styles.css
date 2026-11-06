@@ -222,3 +222,19 @@ body.settings-body { background: #171a21; }
   color: #FF5252;
   text-shadow: 0 2px 14px rgba(0,0,0,.68);
 }
+
+/* ---------- v1.5.2: 单词卡改实色深卡，不再半透明 ---------- */
+.word-card {
+  background: #161a21 !important;
+  border: 1px solid rgba(255,255,255,.16) !important;
+  box-shadow: 0 10px 28px rgba(0,0,0,.45);
+  color: #eef1f6;
+  backdrop-filter: none !important;
+  -webkit-backdrop-filter: none !important;
+  text-shadow: none;
+}
+.word-card .word-title { color: #ffffff; -webkit-text-stroke: 0; }
+.word-card .word-phonetic { color: rgba(238,241,246,.65); }
+.word-card .word-meaning-zh { color: #ffd166; }
+.word-card .word-defs { color: rgba(238,241,246,.85); }
+.word-card .word-status { color: rgba(238,241,246,.8); }

@@ -1,5 +1,6 @@
 // English Companion 设置（本地保存，不上传；密钥只存本机 WebView 本地存储，从不写入日志）。
 export type ProviderId = "tencent" | "google" | "microsoft" | "mymemory" | "libre" | "baidu" | "volcano" | "appsscript";
+export type TriggerMode = "enter" | "auto";
 
 export type AppSettings = {
   // 翻译服务
@@ -31,6 +32,7 @@ export type AppSettings = {
   paused: boolean;
   clipboardEnabled: boolean;
   uiaEnabled: boolean;
+  triggerMode: TriggerMode; // enter=在输入框按回车才翻译；auto=输入停顿后自动翻译
   blacklist: string; // 每行一个进程名片段
   // 显示文字（v1.5：背景纯透明，文字用醒目高亮色 + 描边保证任何背景下看得清）
   textColorId: string; // TEXT_COLORS 的 id
@@ -79,6 +81,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   paused: false,
   clipboardEnabled: true,
   uiaEnabled: true,
+  triggerMode: "enter",
   blacklist: "1password\nkeepass\nbitwarden\nlastpass",
   textColorId: "yellow",
   textOutline: true,

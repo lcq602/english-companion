@@ -1,6 +1,6 @@
 [package]
 name = "english-companion"
-version = "1.5.1"
+version = "1.5.2"
 description = "English Companion - Windows desktop real-time translation companion (free machine translation, no LLM)"
 authors = ["lcq602"]
 edition = "2021"
@@ -30,4 +30,4 @@ time = "0.3"
 
 [target.'cfg(windows)'.dependencies]
 uiautomation = "0.25"
-windows = { version = "0.62", features = ["Win32_Foundation", "Win32_System_Threading", "Win32_System_ProcessStatus"] }
+windows = { version = "0.62", features = ["Win32_Foundation", "Win32_System_Threading", "Win32_System_ProcessStatus", "Win32_UI_Input_KeyboardAndMouse"] }
