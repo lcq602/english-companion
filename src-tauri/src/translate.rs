@@ -15,7 +15,7 @@ use crate::terms;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProviderConfig {
-    pub provider: String,          // google | microsoft | mymemory | libre
+    pub provider: String,          // tencent | google | microsoft | mymemory | libre
     pub fallback_provider: String, // 同上，空字符串表示不启用备用
     pub microsoft_key: String,
     pub microsoft_region: String,
@@ -23,25 +23,40 @@ pub struct ProviderConfig {
     pub libre_key: String,
     pub mymemory_email: String,
     pub timeout_secs: u64,
+    // 腾讯云 TMT（v1.1 起为默认引擎，用户在独立配置窗口填写，仅存本机）
+    #[serde(default)]
+    pub tencent_secret_id: String,
+    #[serde(default)]
+    pub tencent_secret_key: String,
+    #[serde(default = "default_tencent_region")]
+    pub tencent_region: String,
+}
+
+fn default_tencent_region() -> String {
+    "ap-guangzhou".to_string()
 }
 
 impl Default for ProviderConfig {
     fn default() -> Self {
         Self {
-            provider: "google".to_string(),
-            fallback_provider: "mymemory".to_string(),
+            provider: "tencent".to_string(),
+            fallback_provider: "google".to_string(),
             microsoft_key: String::new(),
             microsoft_region: String::new(),
             libre_url: "https://libretranslate.com".to_string(),
             libre_key: String::new(),
             mymemory_email: String::new(),
             timeout_secs: 10,
+            tencent_secret_id: String::new(),
+            tencent_secret_key: String::new(),
+            tencent_region: default_tencent_region(),
         }
     }
 }
 
 pub fn provider_display_name(id: &str) -> &'static str {
     match id {
+        "tencent" => "腾讯云机器翻译",
         "google" => "Google Translate（非官方免费接口）",
         "microsoft" => "Microsoft Translator",
         "mymemory" => "MyMemory（免费备用）",
@@ -77,9 +92,11 @@ pub struct GoogleProvider;
 pub struct MicrosoftProvider;
 pub struct MyMemoryProvider;
 pub struct LibreProvider;
+pub struct TencentProvider;
 
 pub fn make_provider(id: &str) -> Option<Box<dyn TranslationProvider>> {
     match id {
+        "tencent" => Some(Box::new(TencentProvider)),
         "google" => Some(Box::new(GoogleProvider)),
         "microsoft" => Some(Box::new(MicrosoftProvider)),
         "mymemory" => Some(Box::new(MyMemoryProvider)),
@@ -143,6 +160,34 @@ pub fn parse_libre(body: &Value) -> Result<String, String> {
         .ok_or_else(|| "LibreTranslate 没有返回译文".to_string())
 }
 
+pub fn parse_tencent(body: &Value) -> Result<String, String> {
+    let response = body
+        .get("Response")
+        .ok_or_else(|| "腾讯云返回格式异常".to_string())?;
+    if let Some(error) = response.get("Error") {
+        let code = error.get("Code").and_then(Value::as_str).unwrap_or("Unknown");
+        let message = error.get("Message").and_then(Value::as_str).unwrap_or("未知错误");
+        let hint = match code {
+            "FailedOperation.NoFreeAmount" => {
+                "：本月免费额度已用完，请到腾讯云机器翻译控制台开通后付费或购买资源包，也可以先切换到备用服务"
+            }
+            "AuthFailure.SignatureFailure" | "AuthFailure.SecretIdNotFound" => {
+                "：请到配置窗口检查 SecretId / SecretKey 是否填写正确"
+            }
+            "FailedOperation.ServiceIsolate" => "：账号欠费或服务已停用，请到腾讯云控制台检查",
+            "RequestLimitExceeded" => "：请求太频繁，请稍后再试",
+            _ => "",
+        };
+        return Err(format!("腾讯云翻译失败（{}）：{}{}", code, message, hint));
+    }
+    response
+        .get("TargetText")
+        .and_then(Value::as_str)
+        .filter(|s| !s.trim().is_empty())
+        .map(|s| s.to_string())
+        .ok_or_else(|| "腾讯云响应中没有找到译文".to_string())
+}
+
 pub fn parse_microsoft(body: &Value) -> Result<String, String> {
     body.get(0)
         .and_then(|item| item.get("translations"))
@@ -152,6 +197,133 @@ pub fn parse_microsoft(body: &Value) -> Result<String, String> {
         .filter(|s| !s.trim().is_empty())
         .map(|s| s.to_string())
         .ok_or_else(|| "Microsoft Translator 没有返回译文".to_string())
+}
+
+// ---------- 腾讯云 TMT（TC3-HMAC-SHA256 签名，移植自原 TranslationControl 项目的实现） ----------
+
+mod tencent_sign {
+    use hmac::{Hmac, Mac};
+    use sha2::{Digest, Sha256};
+
+    type HmacSha256 = Hmac<Sha256>;
+
+    pub fn sha256_hex(value: &str) -> String {
+        let mut hasher = Sha256::new();
+        hasher.update(value.as_bytes());
+        hex::encode(hasher.finalize())
+    }
+
+    pub fn hmac_sha256(key: &[u8], value: &str) -> Vec<u8> {
+        let mut mac = HmacSha256::new_from_slice(key).expect("HMAC accepts any key length");
+        mac.update(value.as_bytes());
+        mac.finalize().into_bytes().to_vec()
+    }
+
+    /// 生成 Authorization 头（时间戳由调用方传入，便于测试）。
+    pub fn authorization(
+        secret_id: &str,
+        secret_key: &str,
+        payload: &str,
+        timestamp: i64,
+        date: &str,
+    ) -> String {
+        const HOST: &str = "tmt.tencentcloudapi.com";
+        const SERVICE: &str = "tmt";
+        let canonical_headers = format!("content-type:application/json\nhost:{}\n", HOST);
+        let signed_headers = "content-type;host";
+        let canonical_request = format!(
+            "POST\n/\n\n{}\n{}\n{}",
+            canonical_headers,
+            signed_headers,
+            sha256_hex(payload)
+        );
+        let credential_scope = format!("{}/{}/tc3_request", date, SERVICE);
+        let string_to_sign = format!(
+            "TC3-HMAC-SHA256\n{}\n{}\n{}",
+            timestamp,
+            credential_scope,
+            sha256_hex(&canonical_request)
+        );
+        let secret_date = hmac_sha256(format!("TC3{}", secret_key).as_bytes(), date);
+        let secret_service = hmac_sha256(&secret_date, SERVICE);
+        let secret_signing = hmac_sha256(&secret_service, "tc3_request");
+        let signature = hex::encode(hmac_sha256(&secret_signing, &string_to_sign));
+        format!(
+            "TC3-HMAC-SHA256 Credential={}/{}, SignedHeaders={}, Signature={}",
+            secret_id, credential_scope, signed_headers, signature
+        )
+    }
+}
+
+#[async_trait::async_trait]
+impl TranslationProvider for TencentProvider {
+    fn id(&self) -> &'static str {
+        "tencent"
+    }
+    async fn translate(
+        &self,
+        client: &reqwest::Client,
+        text: &str,
+        source: &str,
+        target: &str,
+        config: &ProviderConfig,
+    ) -> Result<String, String> {
+        use reqwest::header::{HeaderValue, AUTHORIZATION, CONTENT_TYPE, HOST};
+        const TENCENT_HOST: &str = "tmt.tencentcloudapi.com";
+        if config.tencent_secret_id.trim().is_empty() || config.tencent_secret_key.trim().is_empty() {
+            return Err("尚未配置腾讯云密钥：请打开配置窗口填写 SecretId 和 SecretKey（或切换到其他翻译服务）".to_string());
+        }
+        let region = if config.tencent_region.trim().is_empty() {
+            "ap-guangzhou"
+        } else {
+            config.tencent_region.trim()
+        };
+        let now = time::OffsetDateTime::now_utc();
+        let timestamp = now.unix_timestamp();
+        let date = now.date().to_string();
+        let payload = serde_json::to_string(&json!({
+            "Source": source,
+            "Target": target,
+            "SourceText": text,
+            "ProjectId": 0,
+        }))
+        .map_err(|_| "无法生成腾讯云请求".to_string())?;
+        let authorization = tencent_sign::authorization(
+            config.tencent_secret_id.trim(),
+            config.tencent_secret_key.trim(),
+            &payload,
+            timestamp,
+            &date,
+        );
+        let resp = client
+            .post(format!("https://{}", TENCENT_HOST))
+            .header(CONTENT_TYPE, HeaderValue::from_static("application/json"))
+            .header(HOST, HeaderValue::from_static(TENCENT_HOST))
+            .header("X-TC-Action", HeaderValue::from_static("TextTranslate"))
+            .header("X-TC-Version", HeaderValue::from_static("2018-03-21"))
+            .header(
+                "X-TC-Region",
+                HeaderValue::from_str(region).map_err(|_| "腾讯云地域格式无效".to_string())?,
+            )
+            .header(
+                "X-TC-Timestamp",
+                HeaderValue::from_str(&timestamp.to_string()).map_err(|_| "时间戳无效".to_string())?,
+            )
+            .header(
+                AUTHORIZATION,
+                HeaderValue::from_str(&authorization).map_err(|_| "腾讯云签名生成失败".to_string())?,
+            )
+            .body(payload)
+            .send()
+            .await
+            .map_err(|e| net_error("腾讯云", &e))?;
+        let status = resp.status();
+        let body: Value = resp.json().await.map_err(|_| "腾讯云返回了无法解析的响应".to_string())?;
+        if !status.is_success() && body.get("Response").and_then(|r| r.get("Error")).is_none() {
+            return Err(format!("腾讯云请求失败（HTTP {}）", status.as_u16()));
+        }
+        parse_tencent(&body)
+    }
 }
 
 // ---------- 各服务实现 ----------
@@ -452,10 +624,30 @@ mod tests {
     }
 
     #[test]
-    fn default_config_is_google_with_mymemory_fallback() {
+    fn default_config_is_tencent_with_google_fallback() {
         let c = ProviderConfig::default();
-        assert_eq!(c.provider, "google");
-        assert_eq!(c.fallback_provider, "mymemory");
+        assert_eq!(c.provider, "tencent");
+        assert_eq!(c.fallback_provider, "google");
+        assert_eq!(c.tencent_region, "ap-guangzhou");
+    }
+
+    #[test]
+    fn parses_tencent_ok_and_errors() {
+        let ok = json!({"Response": {"TargetText": "Hello", "Source": "zh", "Target": "en"}});
+        assert_eq!(parse_tencent(&ok).unwrap(), "Hello");
+        let quota = json!({"Response": {"Error": {"Code": "FailedOperation.NoFreeAmount", "Message": "used up"}}});
+        assert!(parse_tencent(&quota).unwrap_err().contains("免费额度"));
+        let auth = json!({"Response": {"Error": {"Code": "AuthFailure.SignatureFailure", "Message": "bad sign"}}});
+        assert!(parse_tencent(&auth).unwrap_err().contains("SecretId"));
+    }
+
+    #[test]
+    fn tencent_authorization_shape() {
+        let auth = super::tencent_sign::authorization("AKIDTEST", "secret", "{}", 1700000000, "2023-11-14");
+        assert!(auth.starts_with("TC3-HMAC-SHA256 Credential=AKIDTEST/2023-11-14/tmt/tc3_request, SignedHeaders=content-type;host, Signature="));
+        let sig = auth.rsplit("Signature=").next().unwrap();
+        assert_eq!(sig.len(), 64);
+        assert!(sig.chars().all(|c| c.is_ascii_hexdigit()));
     }
 
     /// 端到端（本地模拟 LibreTranslate 服务）：验证 HTTP 请求/响应与技术名词还原全链路。

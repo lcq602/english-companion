@@ -1,31 +1,32 @@
-// English Companion 设置（本地保存，不上传；API Key 只存本机 WebView 本地存储，
-// 与原项目保存腾讯云密钥的方式一致，且从不写入日志）。
-export type ProviderId = "google" | "microsoft" | "mymemory" | "libre";
+// English Companion 设置（本地保存，不上传；密钥只存本机 WebView 本地存储，从不写入日志）。
+export type ProviderId = "tencent" | "google" | "microsoft" | "mymemory" | "libre";
 
 export type AppSettings = {
   // 翻译服务
   provider: ProviderId;
   fallbackProvider: ProviderId | "";
+  tencentSecretId: string;
+  tencentSecretKey: string;
+  tencentRegion: string;
   microsoftKey: string;
   microsoftRegion: string;
   libreUrl: string;
   libreKey: string;
   mymemoryEmail: string;
   timeoutSecs: number;
-  // 窗口
+  // 显示窗
   alwaysOnTop: boolean;
-  opacity: number; // 0.35 - 1，悬浮窗卡片不透明度
-  bilingual: boolean; // true=中英对照，false=纯英文
-  // 监听
-  paused: boolean;
-  clipboardEnabled: boolean;
-  uiaEnabled: boolean;
-  blacklist: string; // 每行一个进程名片段
+  opacity: number; // 0.35 - 1，透明显示窗的不透明度
+  lockPosition: boolean; // 固定位置（禁止拖动）
+  clickThroughOnStart: boolean; // 启动时开启点击穿透
 };
 
 export const DEFAULT_SETTINGS: AppSettings = {
-  provider: "google",
-  fallbackProvider: "mymemory",
+  provider: "tencent",
+  fallbackProvider: "google",
+  tencentSecretId: "",
+  tencentSecretKey: "",
+  tencentRegion: "ap-guangzhou",
   microsoftKey: "",
   microsoftRegion: "",
   libreUrl: "https://libretranslate.com",
@@ -34,11 +35,8 @@ export const DEFAULT_SETTINGS: AppSettings = {
   timeoutSecs: 10,
   alwaysOnTop: true,
   opacity: 0.92,
-  bilingual: true,
-  paused: false,
-  clipboardEnabled: true,
-  uiaEnabled: true,
-  blacklist: "1password\nkeepass\nbitwarden\nlastpass",
+  lockPosition: false,
+  clickThroughOnStart: false,
 };
 
 const STORAGE_KEY = "english-companion.settings.v1";
@@ -67,16 +65,16 @@ export function toProviderConfig(settings: AppSettings) {
     libre_key: settings.libreKey,
     mymemory_email: settings.mymemoryEmail,
     timeout_secs: settings.timeoutSecs,
+    tencent_secret_id: settings.tencentSecretId,
+    tencent_secret_key: settings.tencentSecretKey,
+    tencent_region: settings.tencentRegion,
   };
 }
 
-export function blacklistList(settings: AppSettings): string[] {
-  return settings.blacklist.split(/\r?\n/).map((s) => s.trim()).filter(Boolean);
-}
-
 export const PROVIDER_NOTES: Record<ProviderId, string> = {
-  google: "默认。非官方免费网页接口（不是 Google Cloud 官方 API），无需注册、无需 Key，但可能限流或变更，不保证稳定性。",
+  tencent: "腾讯云机器翻译 TMT（默认）：国内直连、速度快。每月有免费额度，额度用完需在腾讯云控制台开通后付费或购买资源包。需要 SecretId / SecretKey。",
+  google: "非官方免费网页接口（不是 Google Cloud 官方 API），无需注册、无需 Key，但国内网络可能很慢或连不上，且可能限流。",
   microsoft: "官方 API。需自备 Azure Translator Key；免费 F0 额度每月 200 万字符。",
-  mymemory: "免费备用。匿名约 1000 词/天；设置里填写邮箱可提升到约 10000 词/天。",
+  mymemory: "免费服务。匿名约 1000 词/天；设置里填写邮箱可提升到约 10000 词/天。",
   libre: "开源可自建。填自建服务地址即可免 Key 使用；官方公共站现需付费 Key。",
 };

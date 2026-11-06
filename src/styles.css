@@ -106,3 +106,50 @@ textarea::placeholder { color: rgba(255,255,255,.45); font-size: 12px; }
 
 @keyframes pulse { from { opacity: .35; } to { opacity: 1; } }
 @media (prefers-reduced-motion: reduce) { * { transition-duration: .01ms !important; animation: none !important; } }
+
+/* ---------- v1.1: 极简显示屏 + 独立配置窗口 ---------- */
+.through-badge { font-size: 11px; color: #ffb86b; letter-spacing: 0.02em; }
+.translation-card.is-through { outline: 1px dashed rgba(64, 166, 255, 0.8); outline-offset: -1px; }
+.display-input {
+  width: 100%; border: 0; background: transparent; color: var(--ink);
+  font: inherit; font-size: 15px; line-height: 1.5; resize: none; outline: none;
+  padding: 2px 0 8px; border-bottom: 1px solid rgba(255, 255, 255, 0.12);
+}
+.display-input::placeholder { color: var(--muted); }
+.display-result { padding-top: 8px; min-height: 54px; }
+
+body.settings-body { background: #171a21; }
+.settings-app { min-height: 100vh; background: #171a21; color: #eceef4; padding: 18px 20px 84px; }
+.settings-header { display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; }
+.settings-header h1 { margin: 0; font-size: 19px; }
+.settings-sub { margin: 4px 0 0; color: #9aa3b2; font-size: 12.5px; }
+.settings-tabs { display: flex; gap: 6px; margin: 16px 0; }
+.settings-tabs button {
+  border: 1px solid rgba(255,255,255,0.14); background: rgba(255,255,255,0.06); color: #eceef4;
+  border-radius: 999px; padding: 6px 14px; font: inherit; font-size: 13px; cursor: pointer;
+}
+.settings-tabs button.active { background: #40a6ff; border-color: #40a6ff; color: #fff; }
+.settings-section { display: flex; flex-direction: column; gap: 12px; }
+.settings-section h3 { margin: 8px 0 -2px; font-size: 14px; }
+.settings-section label { display: flex; flex-direction: column; gap: 6px; font-size: 13px; color: #c6ccd8; }
+.settings-section .switch-row { flex-direction: row; align-items: center; gap: 8px; }
+.settings-section input[type="text"], .settings-section input:not([type]), .settings-section input[type="password"],
+.settings-section select {
+  background: rgba(255,255,255,0.07); border: 1px solid rgba(255,255,255,0.16); color: #eceef4;
+  border-radius: 8px; padding: 8px 10px; font: inherit; font-size: 13.5px;
+}
+.settings-section input[type="range"] { width: 100%; }
+.settings-section .note { margin: 0; font-size: 12.5px; color: #9aa3b2; line-height: 1.55; }
+.settings-footer {
+  position: fixed; left: 0; right: 0; bottom: 0; padding: 12px 20px;
+  background: #12141a; border-top: 1px solid rgba(255,255,255,0.1);
+  display: flex; align-items: center; justify-content: flex-end; gap: 14px;
+}
+.saved-hint { color: #7dd88a; font-size: 12.5px; }
+.settings-row-actions { display: flex; gap: 8px; }
+.history-item.dark, .word-item.dark { background: rgba(255,255,255,0.05); border-color: rgba(255,255,255,0.1); }
+.history-main.static { cursor: default; }
+.empty-note.dark { color: #9aa3b2; }
+.review-card.dark { background: rgba(255,255,255,0.06); border-color: rgba(255,255,255,0.12); color: #eceef4; }
+.window-button.dark { color: #c6ccd8; }
+.word-item.dark .word-meaning { color: #c6ccd8; }

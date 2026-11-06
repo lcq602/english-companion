@@ -1,6 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import type { AppSettings } from "./settings";
-import { blacklistList, toProviderConfig } from "./settings";
+import { toProviderConfig } from "./settings";
 
 export type TranslateResponse = {
   translated_text: string;
@@ -84,16 +84,13 @@ export async function copyText(text: string): Promise<void> {
   }
 }
 
-export async function syncMonitorConfig(settings: AppSettings): Promise<void> {
-  if (!isTauri()) return;
-  await invoke("set_monitor_config", {
-    config: {
-      paused: settings.paused,
-      clipboard_enabled: settings.clipboardEnabled,
-      uia_enabled: settings.uiaEnabled,
-      blacklist: blacklistList(settings),
-    },
-  });
+export async function openSettingsWindow(): Promise<void> {
+  if (isTauri()) await invoke("open_settings");
+}
+
+export async function setClickThrough(enabled: boolean): Promise<boolean> {
+  if (!isTauri()) return enabled;
+  return invoke<boolean>("set_click_through", { enabled });
 }
 
 /// 英文发音：优先词典真人音频，其次 WebView 自带语音合成（均为普通系统能力，不涉及大模型）。

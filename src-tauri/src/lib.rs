@@ -1,18 +1,16 @@
-//! English Companion 主入口：注册命令、托盘、全局快捷键、监听线程与主窗口（右侧悬浮）。
-//! 翻译只走普通机器翻译服务（见 translate 模块），不使用任何 AI 大模型接口。
-//! 原腾讯云 TMT 实现已按新需求移除（需要付费密钥、且不在本次指定的服务清单内），
-//! 语言检测逻辑保留并移植到了 lang 模块（Rust + TS 双份，保持一致）。
+//! English Companion 主入口（v1.1）：极简透明显示主窗口 + 独立配置窗口。
+//! 翻译默认走腾讯云机器翻译 TMT（普通机器翻译服务），不用任何 AI 大模型接口。
+//! v1.1 按用户反馈去掉自动监听（UIA/剪贴板轮询），只保留手动文字翻译、
+//! 全局快捷键（剪贴板取词/显隐/点击穿透）、系统托盘与 SQLite 缓存/历史/收藏。
 
 mod db;
 mod lang;
-mod monitor;
 mod terms;
 mod translate;
 
 use db::{Db, FavoriteWord, HistoryItem};
-use monitor::MonitorState;
 use serde::{Deserialize, Serialize};
-use std::sync::atomic::Ordering;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use tauri::{
     menu::{Menu, MenuItem},
@@ -25,9 +23,12 @@ use translate::ProviderConfig;
 
 pub struct AppState {
     db: Arc<Db>,
-    monitor: MonitorState,
-    /// 限制并发翻译请求（性能要求）：最多同时 2 个在途请求。
+    /// 限制并发翻译请求：最多同时 2 个在途请求。
     semaphore: Arc<Semaphore>,
+    /// 主窗口是否处于点击穿透状态（点击落到窗口后面的应用）。
+    click_through: Arc<AtomicBool>,
+    /// 程序自己写剪贴板后短暂抑制快捷键取词回环（仅用于状态一致性）。
+    suppress_clipboard_until: Arc<std::sync::Mutex<std::time::Instant>>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -256,50 +257,72 @@ fn get_stats(state: tauri::State<'_, AppState>) -> Stats {
     Stats { cache_count, history_count }
 }
 
-// ---------- 监听配置 / 剪贴板命令 ----------
+// ---------- 窗口 / 剪贴板命令 ----------
 
-#[derive(Debug, Clone, Deserialize)]
-pub struct MonitorConfig {
-    pub paused: bool,
-    pub clipboard_enabled: bool,
-    pub uia_enabled: bool,
-    pub blacklist: Vec<String>,
+#[derive(Debug, Clone, Serialize)]
+pub struct TextEvent {
+    pub text: String,
+    pub source: String,
+    pub app: String,
+}
+
+/// 显示独立配置窗口：已有则显示聚焦，被关闭销毁后按相同参数重建。
+fn show_settings(app: &tauri::AppHandle) {
+    if let Some(window) = app.get_webview_window("settings") {
+        let _ = window.show();
+        let _ = window.set_focus();
+        return;
+    }
+    let _ = tauri::WebviewWindowBuilder::new(
+        app,
+        "settings",
+        tauri::WebviewUrl::App("index.html#settings".into()),
+    )
+    .title("English Companion 设置")
+    .inner_size(560.0, 700.0)
+    .center()
+    .build();
 }
 
 #[tauri::command]
-fn set_monitor_config(state: tauri::State<'_, AppState>, config: MonitorConfig) {
-    state.monitor.paused.store(config.paused, Ordering::Relaxed);
-    state.monitor.clipboard_enabled.store(config.clipboard_enabled, Ordering::Relaxed);
-    state.monitor.uia_enabled.store(config.uia_enabled, Ordering::Relaxed);
-    if let Ok(mut list) = state.monitor.blacklist.write() {
-        *list = config.blacklist;
+fn open_settings(app: tauri::AppHandle) {
+    show_settings(&app);
+}
+
+/// 切换主窗口点击穿透；返回切换后的状态。穿透时点击落到后面的应用，
+/// 只能用快捷键 Ctrl+Shift+C 或托盘菜单关掉。
+#[tauri::command]
+fn set_click_through(app: tauri::AppHandle, state: tauri::State<'_, AppState>, enabled: bool) -> bool {
+    state.click_through.store(enabled, Ordering::Relaxed);
+    if let Some(window) = app.get_webview_window("main") {
+        let _ = window.set_ignore_cursor_events(enabled);
     }
+    let _ = app.emit("clickthrough-changed", enabled);
+    enabled
 }
 
 #[tauri::command]
 fn copy_text(state: tauri::State<'_, AppState>, text: String) -> Result<(), String> {
-    // 标记抑制窗口，避免自己复制译文又被剪贴板监听当成新输入
-    if let Ok(mut until) = state.monitor.suppress_clipboard_until.lock() {
+    if let Ok(mut until) = state.suppress_clipboard_until.lock() {
         *until = std::time::Instant::now() + std::time::Duration::from_secs(2);
     }
     let mut clipboard = arboard::Clipboard::new().map_err(|_| "无法访问剪贴板".to_string())?;
     clipboard.set_text(text).map_err(|_| "复制失败".to_string())
 }
 
-/// 主动读取剪贴板并翻译（快捷键 Ctrl+Shift+T 触发时 Rust 直接发事件，前端走同一流程）。
-fn emit_clipboard_text(app: &tauri::AppHandle, state: &MonitorState) {
+/// 快捷键触发：读剪贴板并把文本发给主窗口走翻译（用户主动操作，非自动监听）。
+fn emit_clipboard_text(app: &tauri::AppHandle) {
     if let Ok(mut cb) = arboard::Clipboard::new() {
         if let Ok(text) = cb.get_text() {
             let trimmed = text.trim().to_string();
             if trimmed.chars().count() >= 2 {
                 let _ = app.emit(
                     "companion-text",
-                    monitor::TextEvent { text: trimmed, source: "clipboard".to_string(), app: String::new() },
+                    TextEvent { text: trimmed, source: "clipboard".to_string(), app: String::new() },
                 );
             }
         }
     }
-    let _ = state; // 保持签名简洁，暂停判断在前端与监听线程已处理
 }
 
 fn toggle_window(app: &tauri::AppHandle) {
@@ -313,24 +336,31 @@ fn toggle_window(app: &tauri::AppHandle) {
     }
 }
 
+fn apply_click_through(app: &tauri::AppHandle, state: &AppState, enabled: bool) {
+    state.click_through.store(enabled, Ordering::Relaxed);
+    if let Some(window) = app.get_webview_window("main") {
+        let _ = window.set_ignore_cursor_events(enabled);
+    }
+    let _ = app.emit("clickthrough-changed", enabled);
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         .setup(|app| {
-            // 数据库：应用数据目录
             let data_dir = app.path().app_data_dir().expect("app data dir");
             std::fs::create_dir_all(&data_dir).ok();
             let db = Arc::new(Db::open(&data_dir.join("english-companion.db"))?);
-            let monitor_state = MonitorState::default();
             app.manage(AppState {
                 db,
-                monitor: monitor_state.clone(),
                 semaphore: Arc::new(Semaphore::new(2)),
+                click_through: Arc::new(AtomicBool::new(false)),
+                suppress_clipboard_until: Arc::new(std::sync::Mutex::new(std::time::Instant::now())),
             });
 
-            // 主窗口定位到屏幕右侧（默认悬浮位置）
+            // 主窗口定位到屏幕右侧（默认悬浮位置；前端会按保存的位置恢复）
             if let Some(window) = app.get_webview_window("main") {
                 if let (Ok(Some(monitor)), Ok(size)) = (window.current_monitor(), window.outer_size()) {
                     let screen = monitor.size();
@@ -339,22 +369,24 @@ pub fn run() {
                 }
             }
 
-            // 系统托盘：显示/隐藏、暂停/恢复、退出
+            // 系统托盘：显示/隐藏、配置、点击穿透、退出
             let show_item = MenuItem::with_id(app, "show", "显示 / 隐藏", true, None::<&str>)?;
-            let pause_item = MenuItem::with_id(app, "pause", "暂停 / 恢复监听", true, None::<&str>)?;
+            let settings_item = MenuItem::with_id(app, "settings", "打开配置", true, None::<&str>)?;
+            let through_item = MenuItem::with_id(app, "through", "点击穿透 开/关", true, None::<&str>)?;
             let quit_item = MenuItem::with_id(app, "quit", "退出", true, None::<&str>)?;
-            let menu = Menu::with_items(app, &[&show_item, &pause_item, &quit_item])?;
-            let monitor_for_tray = monitor_state.clone();
+            let menu = Menu::with_items(app, &[&show_item, &settings_item, &through_item, &quit_item])?;
             TrayIconBuilder::new()
                 .icon(app.default_window_icon().unwrap().clone())
                 .tooltip("English Companion 英语伴侣")
                 .menu(&menu)
                 .on_menu_event(move |app, event| match event.id.as_ref() {
                     "show" => toggle_window(app),
-                    "pause" => {
-                        let paused = monitor_for_tray.paused.load(Ordering::Relaxed);
-                        monitor_for_tray.paused.store(!paused, Ordering::Relaxed);
-                        let _ = app.emit("monitor-paused-changed", !paused);
+                    "settings" => show_settings(app),
+                    "through" => {
+                        if let Some(state) = app.try_state::<AppState>() {
+                            let next = !state.click_through.load(Ordering::Relaxed);
+                            apply_click_through(app, &state, next);
+                        }
                     }
                     "quit" => app.exit(0),
                     _ => {}
@@ -366,34 +398,31 @@ pub fn run() {
                 })
                 .build(app)?;
 
-            // 全局快捷键：Ctrl+Shift+T 剪贴板翻译 / Ctrl+Shift+H 显示隐藏 / Ctrl+Shift+P 暂停恢复
+            // 全局快捷键：Ctrl+Shift+T 剪贴板翻译 / Ctrl+Shift+H 显示隐藏 / Ctrl+Shift+C 点击穿透
             let shortcut_t = Shortcut::new(Some(Modifiers::CONTROL | Modifiers::SHIFT), Code::KeyT);
             let shortcut_h = Shortcut::new(Some(Modifiers::CONTROL | Modifiers::SHIFT), Code::KeyH);
-            let shortcut_p = Shortcut::new(Some(Modifiers::CONTROL | Modifiers::SHIFT), Code::KeyP);
-            let monitor_for_keys = monitor_state.clone();
+            let shortcut_c = Shortcut::new(Some(Modifiers::CONTROL | Modifiers::SHIFT), Code::KeyC);
             app.global_shortcut().on_shortcuts(
-                [shortcut_t, shortcut_h, shortcut_p],
+                [shortcut_t, shortcut_h, shortcut_c],
                 move |app, shortcut, event| {
                     if event.state() != ShortcutState::Pressed {
                         return;
                     }
                     if shortcut == &shortcut_t {
-                        emit_clipboard_text(app, &monitor_for_keys);
+                        emit_clipboard_text(app);
                         if let Some(window) = app.get_webview_window("main") {
                             let _ = window.show();
                         }
                     } else if shortcut == &shortcut_h {
                         toggle_window(app);
-                    } else if shortcut == &shortcut_p {
-                        let paused = monitor_for_keys.paused.load(Ordering::Relaxed);
-                        monitor_for_keys.paused.store(!paused, Ordering::Relaxed);
-                        let _ = app.emit("monitor-paused-changed", !paused);
+                    } else if shortcut == &shortcut_c {
+                        if let Some(state) = app.try_state::<AppState>() {
+                            let next = !state.click_through.load(Ordering::Relaxed);
+                            apply_click_through(app, &state, next);
+                        }
                     }
                 },
             )?;
-
-            // 启动剪贴板 + UIA 监听线程
-            monitor::start_monitors(app.handle().clone(), monitor_state);
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -406,8 +435,9 @@ pub fn run() {
             remove_favorite,
             list_favorites,
             get_stats,
-            set_monitor_config,
-            copy_text
+            copy_text,
+            open_settings,
+            set_click_through
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
